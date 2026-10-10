@@ -18,13 +18,13 @@ import json
 import os
 import sys
 import time
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from osac_ci import bot_approve, e2e_start, lockfacts
 from osac_ci import compare as compare_mod
-from osac_ci import e2e_start, lockfacts
 from osac_ci.authorize import authorize, override, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
@@ -269,6 +269,17 @@ def _parser() -> argparse.ArgumentParser:
         "--fail-on-looser", action="store_true", help="exit 1 when OSAC CI says ready while a required check has not"
     )
 
+    bot = sub.add_parser(
+        "bot-decide",
+        help="say whether a dependency-update pull request may be approved automatically, and why (approves nothing)",
+    )
+    bot.add_argument("--repo", required=True, help="owner/name")
+    bot_which = bot.add_mutually_exclusive_group(required=True)
+    bot_which.add_argument("--number", type=int, help="the pull request")
+    bot_which.add_argument("--head-sha", help="the open pull request(s) with exactly this head commit")
+    bot.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    bot.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
+
     dec = sub.add_parser(
         "e2e-decide",
         help="say whether the full-install E2E should start for a pull request now, and why (starts nothing)",
@@ -299,6 +310,37 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _decide_command(
+    args: argparse.Namespace,
+    decide: Callable[[GitHubClient, int], Any],
+    render: Callable[[Any], str],
+    to_json: Callable[[Any], str],
+    name: str,
+) -> int:
+    """Shared by the commands that answer a question about pull requests without changing anything: find the pull
+    requests (one number, or whatever open ones have this head commit), decide each, print markdown or JSON, optionally
+    write the JSON. A GitHub failure exits 3 and prints no answer."""
+    try:
+        client = build_client()
+        numbers = [args.number] if args.number is not None else find_open_prs(client, args.repo, sha=args.head_sha)
+        decisions = [decide(client, n) for n in numbers]
+    except (GitHubError, KeyError, ValueError) as exc:
+        print(f"error: {name} failed: {exc}", file=sys.stderr)
+        return 3
+    as_json = json.dumps([json.loads(to_json(d)) for d in decisions], indent=2)
+    if args.json_file:
+        try:
+            args.json_file.write_text(as_json + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"error: cannot write {args.json_file}: {exc}", file=sys.stderr)
+            return 3
+    if args.json:
+        print(as_json)
+    else:
+        print("\n".join(render(d) for d in decisions) or "No open pull request has this head.", end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "find-pr":
@@ -317,6 +359,15 @@ def main(argv: list[str] | None = None) -> int:
             print(f"error: lock-status failed: {exc}", file=sys.stderr)
             return 3
         return 0
+
+    if args.command == "bot-decide":
+        return _decide_command(
+            args,
+            lambda client, n: bot_approve.decide(bot_approve.fetch_inputs(client, args.repo, n)),
+            bot_approve.render_markdown,
+            bot_approve.to_json,
+            "bot-decide",
+        )
 
     try:
         policy = load_policy(args.policy)
@@ -514,29 +565,13 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if args.fail_on_looser and found.looser else 0
 
     if args.command == "e2e-decide":
-        try:
-            client = build_client()
-            numbers = [args.number] if args.number is not None else find_open_prs(client, args.repo, sha=args.head_sha)
-            decisions = [e2e_start.decide(e2e_start.fetch_inputs(client, policy, args.repo, n)) for n in numbers]
-        except (GitHubError, KeyError, ValueError) as exc:
-            print(f"error: e2e-decide failed: {exc}", file=sys.stderr)
-            return 3
-        if args.json_file:
-            try:
-                args.json_file.write_text(
-                    json.dumps([json.loads(e2e_start.to_json(d)) for d in decisions], indent=2) + "\n", encoding="utf-8"
-                )
-            except OSError as exc:
-                print(f"error: cannot write {args.json_file}: {exc}", file=sys.stderr)
-                return 3
-        if args.json:
-            print(json.dumps([json.loads(e2e_start.to_json(d)) for d in decisions], indent=2))
-        else:
-            print(
-                "\n".join(e2e_start.render_markdown(d) for d in decisions) or "No open pull request has this head.",
-                end="",
-            )
-        return 0
+        return _decide_command(
+            args,
+            lambda client, n: e2e_start.decide(e2e_start.fetch_inputs(client, policy, args.repo, n)),
+            e2e_start.render_markdown,
+            e2e_start.to_json,
+            "e2e-decide",
+        )
 
     if args.command == "replay":
         try:
