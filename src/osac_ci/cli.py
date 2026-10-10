@@ -25,6 +25,7 @@ from typing import Any
 
 from osac_ci import bot_approve, e2e_start, lockfacts
 from osac_ci import compare as compare_mod
+from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
@@ -268,6 +269,18 @@ def _parser() -> argparse.ArgumentParser:
     cmp.add_argument(
         "--fail-on-looser", action="store_true", help="exit 1 when OSAC CI says ready while a required check has not"
     )
+
+    ec = sub.add_parser(
+        "e2e-compare", help="compare the E2E start decision with what the current flow did, on every open pull request"
+    )
+    ec.add_argument("--policy", type=Path, required=True)
+    ec.add_argument("--repo", required=True, help="owner/name")
+    ec.add_argument("--branch", default="main", help="branch whose rules list the required checks")
+    ec.add_argument("--include-drafts", action="store_true")
+    ec.add_argument("--limit", type=int)
+    ec.add_argument("--workers", type=int, default=6)
+    ec.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    ec.add_argument("--json-file", type=Path, help="also write the JSON here, so one run gives both formats")
 
     bot = sub.add_parser(
         "bot-decide",
@@ -572,6 +585,30 @@ def main(argv: list[str] | None = None) -> int:
             e2e_start.to_json,
             "e2e-decide",
         )
+
+    if args.command == "e2e-compare":
+        try:
+            found_e2e = e2e_compare_mod.compare(
+                build_client(),
+                policy,
+                args.repo,
+                generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
+                branch=args.branch,
+                include_drafts=args.include_drafts,
+                limit=args.limit,
+                workers=args.workers,
+            )
+        except (GitHubError, ValueError) as exc:
+            print(f"error: e2e-compare failed: {exc}", file=sys.stderr)
+            return 3
+        if args.json_file:
+            try:
+                args.json_file.write_text(e2e_compare_mod.to_json(found_e2e) + "\n", encoding="utf-8")
+            except OSError as exc:
+                print(f"error: cannot write {args.json_file}: {exc}", file=sys.stderr)
+                return 3
+        print(e2e_compare_mod.to_json(found_e2e) if args.json else e2e_compare_mod.render(found_e2e), end="")
+        return 0
 
     if args.command == "replay":
         try:

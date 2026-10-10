@@ -263,6 +263,7 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 | Publisher | `src/osac_ci/publish.py` | Posts the verdict as the *OSAC CI* check run, for a PR or for a merge-queue commit; the sweep budget lives here. |
 | Authorizer | `src/osac_ci/authorize.py` | Handles `/ok-to-test <sha>` and `/override <sha> <reason>` comments. |
 | Report | `src/osac_ci/report.py`, `render.py` | A table of every open PR (markdown, HTML, JSON). |
+| E2E compare | `src/osac_ci/e2e_compare.py` | Sets the E2E start decision against what the current label-based flow did, on every open PR. |
 | Bot approval | `src/osac_ci/bot_approve.py` | Says whether a Dependabot or Konflux PR may be approved without a person (a dry run: it approves nothing). |
 | E2E start | `src/osac_ci/e2e_start.py` | Says whether the full-install E2E should start for a PR now and why (a dry run: it starts nothing). |
 | Compare | `src/osac_ci/compare.py` | On every open PR, compares "OSAC CI says ready" with "every required check passed". |
@@ -294,11 +295,12 @@ GH_TOKEN=... uv run osac-ci report  --policy policy/osac.yml --repo osac-project
 GH_TOKEN=... uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac
 GH_TOKEN=... uv run osac-ci e2e-decide --policy policy/osac.yml --repo osac-project/osac --number 1543
 GH_TOKEN=... uv run osac-ci bot-decide --repo osac-project/osac --number 1569
+GH_TOKEN=... uv run osac-ci e2e-compare --policy policy/osac.yml --repo osac-project/osac
 GH_TOKEN=... uv run osac-ci replay  --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
 GH_TOKEN=... uv run osac-ci publish --policy policy/osac-ci.yml --repo osac-project/osac-ci --number 12 --dry-run
 ```
 
-`policy check`, `explain`, `explain-pr`, `report`, `compare`, `e2e-decide`, `bot-decide` and `replay` only read. `publish`, `publish-queue` and `authorize`
+`policy check`, `explain`, `explain-pr`, `report`, `compare`, `e2e-decide`, `e2e-compare`, `bot-decide` and `replay` only read. `publish`, `publish-queue` and `authorize`
 write check runs; `--dry-run` prints instead.
 
 ## Policy reference
@@ -880,6 +882,26 @@ current label-based flow did, so the two can be compared.
 
 `.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
 commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
+
+### Comparing the E2E decision with what the current flow did
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci e2e-compare --policy policy/osac.yml --repo osac-project/osac
+```
+
+For every open, non-draft PR, the `e2e-decide` answer and the state of the real E2E jobs on the same head commit, both
+read from the same moment. The real jobs are the check runs `e2e-<suite>-full-install / e2e` (not the gate placeholders):
+absent or skipped means the current flow has not started that suite, in progress means running, anything else means it ran.
+
+| Outcome | Meaning |
+|---|---|
+| `agree-start` | the decision says start and the E2E has started |
+| `agree-wait` | the decision says wait or skip and the E2E has not started |
+| `new-only` | the decision says start, the current flow has not started the E2E: it would run here if the new flow replaced the old one |
+| `old-only` | the current flow started the E2E, the decision would not (no approval, a cheap check failed, changes requested, not affected by the change): it would not run here. Counted by the decision's reason |
+
+`--json`, `--json-file`, `--include-drafts`, `--limit`, `--workers` and `--branch` work as in `compare`. It reads the required
+checks once and about six requests per PR. A PR that cannot be read is its own row.
 
 ### Approving dependency updates without a person (dry run)
 

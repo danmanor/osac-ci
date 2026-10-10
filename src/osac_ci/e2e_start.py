@@ -235,14 +235,25 @@ def suites_of(policy: Policy) -> tuple[Suite, ...]:
     )
 
 
-def fetch_inputs(client: GitHubClient, policy: Policy, repo: str, number: int, *, branch: str | None = None) -> Inputs:
+def fetch_inputs(
+    client: GitHubClient,
+    policy: Policy,
+    repo: str,
+    number: int,
+    *,
+    branch: str | None = None,
+    required: Sequence[Requirement] | None = None,
+) -> Inputs:
+    """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
+    over many pull requests reads them once)."""
     repo = check_repo(repo)
     base = f"/repos/{repo}"
     pr = get(client, f"{base}/pulls/{number}")
     head_sha = str(pr["head"]["sha"])
     suites = suites_of(policy)
     gates = {s.check for s in suites}
-    required = required_contexts(client, repo, branch or str(pr["base"]["ref"]))
+    if required is None:
+        required = required_contexts(client, repo, branch or str(pr["base"]["ref"]))
     cheap = tuple(r for r in required if r.context not in gates and r.context not in NOT_CHEAP)
     reviews = tuple(
         Review(
