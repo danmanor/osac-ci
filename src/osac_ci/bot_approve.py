@@ -190,9 +190,19 @@ def fetch_inputs(client: GitHubClient, repo: str, number: int) -> Inputs:
         files.append(str(raw["filename"]))
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
+    # Everything above must describe the same head commit. A push while the pull request was being read would mix the
+    # commits or files of one head with the sha of another, so a change of head (or a commit list that does not end at
+    # the head) is an error, never an answer.
+    head_sha = str(pr["head"]["sha"])
+    if commits and commits[-1].sha != head_sha:
+        raise ValueError(
+            f"the listed commits do not end at the head {head_sha[:7]}: the pull request changed while read"
+        )
+    if str(get(client, f"{base}/pulls/{number}")["head"]["sha"]) != head_sha:
+        raise ValueError(f"the head of pull request {number} changed while it was read")
     return Inputs(
         number=number,
-        head_sha=str(pr["head"]["sha"]),
+        head_sha=head_sha,
         author=str(user.get("login", "")),
         author_type=str(user.get("type", "")),
         state=str(pr.get("state", "open")),
