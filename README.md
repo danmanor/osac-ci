@@ -263,6 +263,7 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 | Publisher | `src/osac_ci/publish.py` | Posts the verdict as the *OSAC CI* check run, for a PR or for a merge-queue commit; the sweep budget lives here. |
 | Authorizer | `src/osac_ci/authorize.py` | Handles `/ok-to-test <sha>` and `/override <sha> <reason>` comments. |
 | Report | `src/osac_ci/report.py`, `render.py` | A table of every open PR (markdown, HTML, JSON). |
+| Bot approval | `src/osac_ci/bot_approve.py` | Says whether a Dependabot or Konflux PR may be approved without a person (a dry run: it approves nothing). |
 | E2E start | `src/osac_ci/e2e_start.py` | Says whether the full-install E2E should start for a PR now and why (a dry run: it starts nothing). |
 | Compare | `src/osac_ci/compare.py` | On every open PR, compares "OSAC CI says ready" with "every required check passed". |
 | Replay | `src/osac_ci/replay.py` | Compares the planner's answers with merged PRs. `parity/explained.yaml` lists signed-off disagreements. |
@@ -292,11 +293,12 @@ GH_TOKEN=... uv run osac-ci explain-pr --policy policy/osac.yml --repo osac-proj
 GH_TOKEN=... uv run osac-ci report  --policy policy/osac.yml --repo osac-project/osac --out-dir report
 GH_TOKEN=... uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac
 GH_TOKEN=... uv run osac-ci e2e-decide --policy policy/osac.yml --repo osac-project/osac --number 1543
+GH_TOKEN=... uv run osac-ci bot-decide --repo osac-project/osac --number 1569
 GH_TOKEN=... uv run osac-ci replay  --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
 GH_TOKEN=... uv run osac-ci publish --policy policy/osac-ci.yml --repo osac-project/osac-ci --number 12 --dry-run
 ```
 
-`policy check`, `explain`, `explain-pr`, `report`, `compare`, `e2e-decide` and `replay` only read. `publish`, `publish-queue` and `authorize`
+`policy check`, `explain`, `explain-pr`, `report`, `compare`, `e2e-decide`, `bot-decide` and `replay` only read. `publish`, `publish-queue` and `authorize`
 write check runs; `--dry-run` prints instead.
 
 ## Policy reference
@@ -878,6 +880,30 @@ current label-based flow did, so the two can be compared.
 
 `.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
 commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
+
+### Approving dependency updates without a person (dry run)
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci bot-decide --repo osac-project/osac --number 1569
+```
+
+Dependabot and Konflux open many small pull requests that only move versions. With native GitHub approval each would need
+a person. `bot-decide` answers whether an automatic approval is safe, and says why not otherwise. It approves nothing
+and needs no policy file. The answer is `approve` only when everything holds on the exact head commit:
+
+- the PR is open, not a draft, and its author is a known bot account (`dependabot[bot]` or the Konflux app) of type Bot;
+- every commit is listed (a PR with more than 250 commits cannot be, so it is refused) and is a plain commit with one
+  parent, authored by the bot, committed by the bot or by GitHub (`web-flow`), and carrying a valid signature. A person who
+  adds a commit, rebases by hand, or presses "Update branch" breaks one of these, and then a person has to approve;
+- every changed file is a dependency file (`go.mod`, `go.sum`, `package.json`, lock files, `pyproject.toml`,
+  `Containerfile*`, `Dockerfile*`, `requirements*.txt`) and the files list is complete. A workflow, a script or a source
+  file is never approved, whoever wrote it.
+
+Other answers: `skip-closed`, `skip-draft`, `skip-not-a-bot`, `refuse-commits` and `refuse-files` (every problem is
+listed, not only the first). The approval would have to be made for the head commit it was checked on, so a later push is
+not covered, and the repository's own rule dismisses it. The author identity alone is metadata: the signature and the
+committer make it hard to forge and the file list limits the harm if it were. `.github/actions/bot-decide` runs it from
+another repository's workflow, pinned to a commit like the other actions.
 
 ### Replay (parity evidence)
 
