@@ -824,6 +824,24 @@ required". A PR already in the merge queue counts as ready. Draft PRs are left o
 them). The report also compares the two lists of checks: checks the ruleset requires that the policy does not know
 (OSAC CI would not wait for them), and checks the policy requires that the ruleset does not.
 
+#### Back-fill: the same question about merged PRs
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac --backfill 60
+```
+
+Waiting for new PRs is slow, so `--backfill DAYS` asks the question about PRs merged in the last `DAYS` days (the last
+100, or `--limit`). Each is rebuilt as it stood at the decision (the replay machinery): when it was enqueued if the queue
+merged it, when it merged if it was merged directly. The outcomes are the same, split by how the PR was merged:
+
+- For queue-merged PRs GitHub had already enforced the required checks, so `looser` is not expected; the useful rows are
+  `stricter`, the PRs OSAC CI would have held back that merged.
+- For PRs merged directly (a bypass of the rules) `looser` is the row to look for: OSAC CI said ready while a required
+  check had not passed.
+
+Limits: the required checks are today's, not those of the time; commit statuses are not rebuilt for a past moment, so a
+requirement that names no app is judged on check runs alone.
+
 The command exits 0 whatever it finds; `--fail-on-looser` exits 1 when there is a `looser` row. `--json` prints JSON
 instead of markdown, and `--json-file PATH` writes the JSON next to the markdown so one run gives both. The
 `compare-required-checks` workflow runs it every day and keeps the files as an artifact and in the job summary.

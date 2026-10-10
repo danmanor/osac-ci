@@ -27,6 +27,7 @@ from collections import Counter
 from collections.abc import Iterable, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from datetime import datetime
 from enum import StrEnum
 from typing import Any
 
@@ -36,7 +37,9 @@ from osac_ci.model import JobStatus, Mode, Snapshot, State
 from osac_ci.planner import check_outcome, error_verdict, latest_checks, plan_or_error
 from osac_ci.policy import Policy
 from osac_ci.publish import CHECK_NAME
+from osac_ci.replay import merged_prs
 from osac_ci.report import list_open_prs, md_escape
+from osac_ci.timeline import state_at
 
 # In pull-request mode a PR in the merge queue is past the point of being ready, so it counts as ready.
 READY = frozenset({State.READY_TO_ENQUEUE, State.IN_QUEUE})
@@ -68,6 +71,8 @@ class Row:
     headline: str
     gaps: tuple[str, ...]  # required checks that have not passed, as "name: why"
     cause: str = ""  # what a difference comes down to, short enough to count; empty when the two agree
+    merged_at: str = ""  # back-fill only: when the PR was merged
+    via_queue: bool = False  # back-fill only: merged by the merge queue (False: merged directly, bypassing the rules)
 
 
 @dataclass(frozen=True)
@@ -86,6 +91,7 @@ class Report:
     required: tuple[Requirement, ...]
     coverage: Coverage
     rows: tuple[Row, ...]
+    days: int = 0  # back-fill: the window of merged PRs that was replayed; 0 for the open PRs
 
     def count(self, outcome: Outcome) -> int:
         return sum(r.outcome is outcome for r in self.rows)
@@ -245,6 +251,75 @@ def compare(
     return Report(repo, branch, generated_at, required, coverage(policy, required), tuple(rows))
 
 
+def backfill(
+    client: GitHubClient,
+    policy: Policy,
+    repo: str,
+    *,
+    now: datetime,
+    days: int,
+    generated_at: str,
+    limit: int = 100,
+    branch: str = "main",
+    org: str | None = None,
+    org_client: GitHubClient | None = None,
+    lookup_membership: bool = False,
+    workers: int = 6,
+) -> Report:
+    """The same comparison on PRs merged in the last ``days`` days, each rebuilt as it stood at the decision: when it
+    was enqueued (queue-merged) or merged (merged directly). Commit statuses are not rebuilt for a past moment, so a
+    requirement that names no app is judged on check runs alone. The required checks are today's, not those of the
+    time."""
+    required = required_contexts(client, repo, branch)
+    prs = merged_prs(client, repo, now=now, days=days, limit=limit)
+    org = org or repo.split("/", 1)[0]
+
+    def one(pr: dict[str, Any]) -> Row:
+        number = pr["number"]
+        title, url, merged_at = str(pr.get("title", "")), str(pr.get("html_url", "")), str(pr["merged_at"])
+        try:
+            snapshot = fetch_snapshot(
+                client,
+                repo,
+                number,
+                org=org,
+                lookup_membership=lookup_membership,
+                approval=policy.approval,
+                protected=policy.protected_paths,
+                override=policy.override,
+                org_client=org_client,
+                trust=policy.trust,
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            verdict = error_verdict(f"could not read PR #{number}: {exc}", Mode.PR)
+            return Row(
+                number, title, url, Outcome.UNREADABLE, verdict.state, verdict.headline, (), "unreadable", merged_at
+            )
+        via_queue = snapshot.queued_per_events
+        moment = snapshot.enqueued_at if via_queue and snapshot.enqueued_at else merged_at
+        then = state_at(snapshot, moment)
+        verdict = plan_or_error(then, policy, Mode.PR)
+        gaps = unmet(then, required)
+        outcome = classify(verdict.state in READY, not gaps)
+        cause = {Outcome.LOOSER: gap_cause(gaps), Outcome.STRICTER: verdict.state.value}.get(outcome, "")
+        return Row(
+            number,
+            title,
+            url,
+            outcome,
+            verdict.state,
+            verdict.headline,
+            tuple(g for g, _ in gaps),
+            cause,
+            merged_at,
+            via_queue,
+        )
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        rows = sorted(pool.map(one, prs), key=lambda r: r.number)
+    return Report(repo, branch, generated_at, required, coverage(policy, required), tuple(rows), days)
+
+
 # rendering ------------------------------------------------------------------------------------------------
 
 
@@ -252,25 +327,53 @@ def _cell(text: str, limit: int = 160) -> str:
     return md_escape(text, limit=limit)
 
 
+def _route(row: Row) -> str:
+    return "queue" if row.via_queue else "direct"
+
+
 def render(report: Report) -> str:
     total = len(report.rows)
-    lines = [
-        f"# OSAC CI against the required checks: {report.repo} ({report.branch})",
-        "",
-        f"Generated {report.generated_at}. {len(report.required)} required checks. {total} open PRs compared.",
-        "",
-        "| Outcome | PRs |",
-        "|---|---|",
-        *[f"| {o.value} | {report.count(o)} |" for o in Outcome],
-    ]
+    if report.days:
+        lines = [
+            f"# OSAC CI against the required checks, merged PRs: {report.repo} ({report.branch})",
+            "",
+            f"Generated {report.generated_at}. {len(report.required)} required checks (today's). {total} PRs merged in "
+            f"the last {report.days} days, each rebuilt as it stood when it was enqueued (merged by the queue) or "
+            "merged (merged directly). Commit statuses are not rebuilt for a past moment.",
+            "",
+            "| Outcome | Merged by the queue | Merged directly |",
+            "|---|---|---|",
+            *[
+                f"| {o.value} | {sum(r.outcome is o and r.via_queue for r in report.rows)} "
+                f"| {sum(r.outcome is o and not r.via_queue for r in report.rows)} |"
+                for o in Outcome
+            ],
+        ]
+    else:
+        lines = [
+            f"# OSAC CI against the required checks: {report.repo} ({report.branch})",
+            "",
+            f"Generated {report.generated_at}. {len(report.required)} required checks. {total} open PRs compared.",
+            "",
+            "| Outcome | PRs |",
+            "|---|---|",
+            *[f"| {o.value} | {report.count(o)} |" for o in Outcome],
+        ]
     if report.looser:
         lines += [
             "",
             "## OSAC CI says ready, a required check has not passed (the unsafe direction)",
             "",
-            "| PR | OSAC CI state | Required checks not passed |",
-            "|---|---|---|",
-            *[f"| [#{r.number}]({r.url}) | {r.state.value} | {_cell('; '.join(r.gaps), 300)} |" for r in report.looser],
+            "| PR | Merged | OSAC CI state | Required checks not passed |"
+            if report.days
+            else "| PR | OSAC CI state | Required checks not passed |",
+            "|---|---|---|---|" if report.days else "|---|---|---|",
+            *[
+                f"| [#{r.number}]({r.url}) | "
+                + (f"{_route(r)} | " if report.days else "")
+                + f"{r.state.value} | {_cell('; '.join(r.gaps), 300)} |"
+                for r in report.looser
+            ],
         ]
     if report.stricter:
         causes = Counter(r.cause for r in report.stricter)
@@ -282,9 +385,14 @@ def render(report: Report) -> str:
             "|---|---|",
             *[f"| {_cell(cause)} | {count} |" for cause, count in causes.most_common()],
             "",
-            "| PR | OSAC CI state | Reason |",
-            "|---|---|---|",
-            *[f"| [#{r.number}]({r.url}) | {r.state.value} | {_cell(r.headline)} |" for r in report.stricter],
+            "| PR | Merged | OSAC CI state | Reason |" if report.days else "| PR | OSAC CI state | Reason |",
+            "|---|---|---|---|" if report.days else "|---|---|---|",
+            *[
+                f"| [#{r.number}]({r.url}) | "
+                + (f"{_route(r)} | " if report.days else "")
+                + f"{r.state.value} | {_cell(r.headline)} |"
+                for r in report.stricter
+            ],
         ]
     unreadable = [r for r in report.rows if r.outcome is Outcome.UNREADABLE]
     if unreadable:
@@ -323,6 +431,7 @@ def to_json(report: Report) -> str:
             "repo": report.repo,
             "branch": report.branch,
             "generated_at": report.generated_at,
+            "days": report.days,
             "required": list(dict.fromkeys(need.context for need in report.required)),
             "counts": {o.value: report.count(o) for o in Outcome},
             "ruleset_only": list(report.coverage.ruleset_only),
@@ -335,6 +444,8 @@ def to_json(report: Report) -> str:
                     "headline": r.headline,
                     "cause": r.cause,
                     "gaps": list(r.gaps),
+                    "merged_at": r.merged_at,
+                    "via_queue": r.via_queue,
                 }
                 for r in report.rows
             ],

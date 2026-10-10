@@ -252,7 +252,14 @@ def _parser() -> argparse.ArgumentParser:
     cmp.add_argument("--repo", required=True, help="owner/name")
     cmp.add_argument("--branch", default="main", help="branch whose rules list the required checks")
     cmp.add_argument("--include-drafts", action="store_true")
-    cmp.add_argument("--limit", type=int)
+    cmp.add_argument("--limit", type=int, help="most PRs to read (with --backfill: 100 unless given)")
+    cmp.add_argument(
+        "--backfill",
+        type=int,
+        metavar="DAYS",
+        help="compare PRs merged in the last DAYS days, each as it stood when it was enqueued or merged, "
+        "instead of the open PRs",
+    )
     cmp.add_argument("--workers", type=int, default=6)
     cmp.add_argument("--org", help="org used for membership lookups (default: the repo owner)")
     cmp.add_argument("--lookup-membership", action="store_true", help="look up org membership (needs an org token)")
@@ -450,20 +457,38 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "compare":
+        if args.backfill is not None and args.backfill < 1:
+            print("error: --backfill needs a number of days of 1 or more", file=sys.stderr)
+            return 2
         try:
-            found = compare_mod.compare(
-                build_client(),
-                policy,
-                args.repo,
-                generated_at=datetime.now(UTC).strftime("%Y-%m-%d %H:%M UTC"),
-                branch=args.branch,
-                org=args.org,
-                org_client=build_org_client(),
-                include_drafts=args.include_drafts,
-                limit=args.limit,
-                lookup_membership=args.lookup_membership,
-                workers=args.workers,
-            )
+            when = datetime.now(UTC)
+            common: dict[str, Any] = {
+                "generated_at": when.strftime("%Y-%m-%d %H:%M UTC"),
+                "branch": args.branch,
+                "org": args.org,
+                "org_client": build_org_client(),
+                "lookup_membership": args.lookup_membership,
+                "workers": args.workers,
+            }
+            if args.backfill is not None:
+                found = compare_mod.backfill(
+                    build_client(),
+                    policy,
+                    args.repo,
+                    now=when,
+                    days=args.backfill,
+                    limit=100 if args.limit is None else args.limit,
+                    **common,
+                )
+            else:
+                found = compare_mod.compare(
+                    build_client(),
+                    policy,
+                    args.repo,
+                    include_drafts=args.include_drafts,
+                    limit=args.limit,
+                    **common,
+                )
         except (GitHubError, ValueError) as exc:
             print(f"error: compare failed: {exc}", file=sys.stderr)
             return 3
