@@ -215,7 +215,7 @@ def compare(
     workers: int = 6,
 ) -> Report:
     required = required_contexts(client, repo, branch)
-    prs = list_open_prs(client, repo, include_drafts=include_drafts)
+    prs = list_open_prs(client, repo, include_drafts=include_drafts, base=branch)
     if limit is not None:
         prs = prs[:limit]
     org = org or repo.split("/", 1)[0]

@@ -74,13 +74,20 @@ class Report:
         return [(s, found[s]) for s in STATE_ORDER if found[s]]
 
 
-def list_open_prs(client: GitHubClient, repo: str, *, include_drafts: bool) -> list[dict[str, Any]]:
+def list_open_prs(
+    client: GitHubClient, repo: str, *, include_drafts: bool, base: str | None = None
+) -> list[dict[str, Any]]:
+    """The open pull requests, most recently updated first; with ``base`` only those that target that branch."""
     prs = paginate(
         client,
         f"/repos/{check_repo(repo)}/pulls",
         params={"state": "open", "sort": "updated", "direction": "desc"},
     )
-    return [pr for pr in prs if include_drafts or not pr.get("draft")]
+    return [
+        pr
+        for pr in prs
+        if (include_drafts or not pr.get("draft")) and (base is None or (pr.get("base") or {}).get("ref") == base)
+    ]
 
 
 def build_report(

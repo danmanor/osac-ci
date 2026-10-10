@@ -56,6 +56,7 @@ def add_pr(
     e2e: str | None = None,
     draft: bool = False,
     files: tuple[str, ...] = ("fulfillment-service/main.go",),
+    base: str = "main",
 ) -> None:
     sha = f"{number:040x}"
     listing.append(
@@ -65,6 +66,7 @@ def add_pr(
             "html_url": f"u/{number}",
             "draft": draft,
             "updated_at": "2026-10-10T10:00:00Z",
+            "base": {"ref": base},
         }
     )
     fake.add(
@@ -214,3 +216,12 @@ def test_an_unwritable_file_and_a_github_failure_exit_three(
     broken.add("GET", f"{BASE}/rules/branches/main", {"message": "boom"}, status=500)
     assert cli_run(monkeypatch, broken) == 3
     assert "e2e-compare failed" in capsys.readouterr().err
+
+
+def test_only_prs_that_target_the_branch_whose_rules_are_read_are_compared() -> None:
+    fake, listing = world()
+    add_pr(fake, listing, 1)
+    add_pr(fake, listing, 2, base="release-1")
+    assert list(outcomes(run(fake))) == [1]
+    # the decision of a PR that is compared always used the required checks of its own base branch
+    assert [c[1] for c in fake.calls if "/pulls/2" in c[1]] == []

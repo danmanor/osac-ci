@@ -246,3 +246,18 @@ def test_write_all_creates_the_directory(tmp_path: Path) -> None:
     add_pr(fake, listing, 1)
     names = write_all(report(fake), tmp_path / "a" / "b", ["json"])
     assert names == ["report.json"] and (tmp_path / "a" / "b" / "report.json").is_file()
+
+
+def test_listing_open_prs_can_be_limited_to_one_base_branch_and_otherwise_lists_all() -> None:
+    from osac_ci.report import list_open_prs
+
+    fake, listing = world()
+    add_pr(fake, listing, 1)
+    add_pr(fake, listing, 2)
+    listing[0]["base"] = {"ref": "main"}
+    listing[1]["base"] = {"ref": "release-1"}
+    assert [p["number"] for p in list_open_prs(fake, REPO, include_drafts=False)] == [1, 2]
+    assert [p["number"] for p in list_open_prs(fake, REPO, include_drafts=False, base="main")] == [1]
+    assert [p["number"] for p in list_open_prs(fake, REPO, include_drafts=False, base="nope")] == []
+    listing.append({"number": 3, "draft": False})  # a listing entry without a base never matches a branch
+    assert [p["number"] for p in list_open_prs(fake, REPO, include_drafts=False, base="main")] == [1]

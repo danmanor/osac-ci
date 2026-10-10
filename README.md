@@ -900,7 +900,8 @@ absent or skipped means the current flow has not started that suite, in progress
 | `new-only` | the decision says start, the current flow has not started the E2E: it would run here if the new flow replaced the old one |
 | `old-only` | the current flow started the E2E, the decision would not (no approval, a cheap check failed, changes requested, not affected by the change): it would not run here. Counted by the decision's reason |
 
-`--json`, `--json-file`, `--include-drafts`, `--limit`, `--workers` and `--branch` work as in `compare`. It reads the required
+`--json`, `--json-file`, `--include-drafts`, `--limit`, `--workers` and `--branch` work as in `compare`; only PRs that target
+`--branch` are compared, since that branch's rules decide what the cheap checks are. It reads the required
 checks once and about six requests per PR. A PR that cannot be read is its own row.
 
 ### Approving dependency updates without a person (dry run)

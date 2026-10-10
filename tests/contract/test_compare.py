@@ -49,6 +49,7 @@ def add_pr(
     draft: bool = False,
     labels: tuple[str, ...] = ("approved",),
     checks: dict[str, tuple[str, str | None]] | None = None,
+    base: str = "main",
 ) -> None:
     """``checks`` maps a check name to (status, conclusion); the default is lint and test passing."""
     sha = f"{number:040x}"
@@ -60,6 +61,7 @@ def add_pr(
             "html_url": f"https://github.com/{REPO}/pull/{number}",
             "updated_at": "2026-10-09T10:00:00Z",
             "draft": draft,
+            "base": {"ref": base},
         }
     )
     fake.add(
@@ -611,3 +613,10 @@ def test_a_malformed_status_entry_is_ignored() -> None:
         },
     )
     assert run(fake).rows[0].gaps == ("lint: not reported yet",)
+
+
+def test_only_prs_that_target_the_branch_whose_rules_are_read_are_compared() -> None:
+    fake, listing = world()
+    add_pr(fake, listing, 1)
+    add_pr(fake, listing, 2, base="release-1")
+    assert list(outcomes(run(fake))) == [1]
