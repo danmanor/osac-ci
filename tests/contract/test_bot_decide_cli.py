@@ -166,3 +166,60 @@ def test_number_and_head_sha_are_exclusive_and_one_is_needed() -> None:
     for argv in (["--number", "5", "--head-sha", SHA], []):
         with pytest.raises(SystemExit):
             cli.main(["bot-decide", "--repo", REPO, *argv])
+
+
+class MovingHead(FakeGitHub):
+    """The pull request answers with a different head the second time it is read, as when someone pushes meanwhile."""
+
+    def __init__(self, base: FakeGitHub, later_head: str) -> None:
+        super().__init__()
+        self.routes = base.routes
+        self.later_head = later_head
+        self.reads = 0
+
+    def request(self, method: str, path: str, **kwargs: Any):  # type: ignore[no-untyped-def]
+        response = super().request(method, path, **kwargs)
+        if (method, path) == ("GET", f"{BASE}/pulls/5"):
+            self.reads += 1
+            if self.reads > 1:
+                response.data["head"] = {"sha": self.later_head}
+        return response
+
+
+def test_a_push_while_the_pull_request_is_read_is_an_error_not_an_answer() -> None:
+    moving = MovingHead(world(), "d" * 40)
+    with pytest.raises(ValueError, match="changed while it was read"):
+        fetch_inputs(moving, REPO, 5)
+
+
+def test_a_head_that_stays_the_same_is_read_twice_and_accepted() -> None:
+    moving = MovingHead(world(), SHA)
+    assert decide(fetch_inputs(moving, REPO, 5)).approves and moving.reads == 2
+
+
+def test_commits_that_do_not_end_at_the_head_are_an_error() -> None:
+    other = raw_commit(sha="e" * 40)
+    with pytest.raises(ValueError, match="do not end at the head"):
+        fetch_inputs(world(commits=(other,), pr={"head": {"sha": SHA}}), REPO, 5)
+
+
+def test_a_pull_request_with_no_commits_is_still_refused_not_approved() -> None:
+    inputs = fetch_inputs(world(commits=(), pr={"commits": 0}), REPO, 5)
+    assert decide(inputs).action is Action.REFUSE_COMMITS
+
+
+def test_the_command_exits_three_when_the_head_moved(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "build_client", lambda **_: MovingHead(world(), "d" * 40))
+    assert cli.main(["bot-decide", "--repo", REPO, "--number", "5"]) == 3
+    captured = capsys.readouterr()
+    assert "changed while it was read" in captured.err and "approve" not in captured.out
+
+
+def test_the_last_listed_commit_is_the_head_not_the_first() -> None:
+    first, last = raw_commit(sha="1" * 40), raw_commit(sha=SHA)
+    ok = fetch_inputs(world(commits=(first, last)), REPO, 5)  # the API lists oldest first
+    assert [c.sha for c in ok.commits] == ["1" * 40, SHA]
+    with pytest.raises(ValueError, match="do not end at the head"):
+        fetch_inputs(world(commits=(last, first)), REPO, 5)
