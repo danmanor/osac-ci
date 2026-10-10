@@ -15,6 +15,7 @@ from osac_ci import cli
 from osac_ci.compare import Outcome, backfill, render, to_json
 from osac_ci.model import State
 from osac_ci.policy import load_policy
+from osac_ci.replay import merged_prs
 
 pytestmark = pytest.mark.contract
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=UTC)
@@ -73,14 +74,17 @@ def add_merged(
     runs: list[dict[str, Any]],
     labels: tuple[str, ...] = ("approved",),
     merged: str = MERGED,
+    base: str = "main",
+    updated: str | None = None,
 ) -> None:
     sha = f"{number:040x}"
     listing.append(
         {
+            "base": {"ref": base},
+            "updated_at": updated or merged,
             "number": number,
             "title": f"merged {number}",
             "merged_at": merged,
-            "updated_at": merged,
             "html_url": f"u/{number}",
         }
     )
@@ -187,8 +191,9 @@ def test_the_markdown_splits_the_outcomes_by_how_the_pr_was_merged() -> None:
     add_merged(fake, listing, 3, [*QUEUED], green_extra, labels=())  # queue, no approval: stricter
     text = render(go(fake))
     assert text.startswith("# OSAC CI against the required checks, merged PRs:")
-    assert "| Outcome | Merged by the queue | Merged directly |" in text
-    assert "| agree-ready | 1 | 0 |" in text and "| looser | 0 | 1 |" in text and "| stricter | 1 | 0 |" in text
+    assert "| Outcome | Merged by the queue | Merged directly | Route unknown |" in text
+    assert "| agree-ready | 1 | 0 | 0 |" in text and "| looser | 0 | 1 | 0 |" in text
+    assert "| stricter | 1 | 0 | 0 |" in text
     assert "| PR | Merged | OSAC CI state | Required checks not passed |" in text
     assert "| [#2](u/2) | direct |" in text and "| [#3](u/3) | queue |" in text
     assert "open PRs compared" not in text
@@ -239,3 +244,47 @@ def test_fail_on_looser_and_json_file_work_with_backfill(monkeypatch: pytest.Mon
     target = tmp_path / "bf.json"
     assert cli_run(monkeypatch, fake, "--backfill", "30", "--fail-on-looser", "--json-file", str(target)) == 1
     assert json.loads(target.read_text(encoding="utf-8"))["counts"]["looser"] == 1
+
+
+def test_an_unreadable_pr_has_no_known_route_and_is_not_counted_as_a_direct_merge() -> None:
+    fake, listing = world()
+    add_merged(fake, listing, 1, [APPROVED_EARLY, *QUEUED], GREEN)
+    add_merged(fake, listing, 2, [APPROVED_EARLY, *DIRECT], GREEN)
+    add_merged(fake, listing, 3, [APPROVED_EARLY, *QUEUED], GREEN)
+    fake.add("GET", f"{BASE}/pulls/3", {"message": "Not Found"}, status=404)
+    report = go(fake)
+    rows = by_number(report)
+    assert (rows[1].via_queue, rows[2].via_queue, rows[3].via_queue) == (True, False, None)
+    text = render(report)
+    assert "| agree-ready | 1 | 1 | 0 |" in text and "| unreadable | 0 | 0 | 1 |" in text
+    assert "## Could not be read" in text and "| [#3](u/3) |" in text.split("## Could not be read")[1]
+    assert {r["number"]: r["via_queue"] for r in json.loads(to_json(report))["rows"]} == {1: True, 2: False, 3: None}
+
+
+def test_the_most_recently_merged_prs_are_chosen_not_the_most_recently_touched() -> None:
+    fake, listing = world()
+    # listed by update time: the first was merged long ago but commented on last
+    add_merged(fake, listing, 1, [], [], merged="2026-09-01T10:00:00Z", updated="2026-10-06T23:00:00Z")
+    add_merged(fake, listing, 2, [], [], merged="2026-10-06T10:00:00Z", updated="2026-10-06T10:00:00Z")
+    add_merged(fake, listing, 3, [], [], merged="2026-10-05T10:00:00Z", updated="2026-10-05T10:00:00Z")
+    found = merged_prs(fake, REPO, now=NOW, days=60, limit=2)
+    assert [pr["number"] for pr in found] == [2, 3]
+    assert [pr["number"] for pr in merged_prs(fake, REPO, now=NOW, days=60, limit=10)] == [2, 3, 1]
+
+
+def test_only_prs_merged_into_the_chosen_branch_are_compared_and_they_do_not_use_up_the_limit() -> None:
+    fake, listing = world()
+    add_merged(fake, listing, 4, [APPROVED_EARLY, *QUEUED], GREEN, base="release-1")
+    add_merged(fake, listing, 3, [APPROVED_EARLY, *QUEUED], GREEN, base="release-1")
+    add_merged(fake, listing, 2, [APPROVED_EARLY, *QUEUED], GREEN)
+    add_merged(fake, listing, 1, [APPROVED_EARLY, *QUEUED], GREEN)
+    assert [r.number for r in go(fake, limit=2).rows] == [1, 2]
+    assert [pr["number"] for pr in merged_prs(fake, REPO, now=NOW, days=60, limit=10)] == [4, 3, 2, 1]
+
+
+def test_without_a_branch_every_base_is_listed() -> None:
+    fake, listing = world()
+    add_merged(fake, listing, 2, [], [], base="release-1")
+    add_merged(fake, listing, 1, [], [])
+    assert len(merged_prs(fake, REPO, now=NOW, days=60, limit=10)) == 2
+    assert [pr["number"] for pr in merged_prs(fake, REPO, now=NOW, days=60, limit=10, base="main")] == [1]

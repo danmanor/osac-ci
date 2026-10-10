@@ -830,9 +830,10 @@ them). The report also compares the two lists of checks: checks the ruleset requ
 GH_TOKEN=$(gh auth token) uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac --backfill 60
 ```
 
-Waiting for new PRs is slow, so `--backfill DAYS` asks the question about PRs merged in the last `DAYS` days (the last
-100, or `--limit`). Each is rebuilt as it stood at the decision (the replay machinery): when it was enqueued if the queue
-merged it, when it merged if it was merged directly. The outcomes are the same, split by how the PR was merged:
+Waiting for new PRs is slow, so `--backfill DAYS` asks the question about PRs merged into `--branch` in the last `DAYS`
+days (the 100 most recently merged, or `--limit`). Each is rebuilt as it stood at the decision (the replay machinery):
+when it was enqueued if the queue merged it, when it merged if it was merged directly. The outcomes are the same, split
+by how the PR was merged (a PR that could not be read has an unknown route and is counted in its own column):
 
 - For queue-merged PRs GitHub had already enforced the required checks, so `looser` is not expected; the useful rows are
   `stricter`, the PRs OSAC CI would have held back that merged.

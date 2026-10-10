@@ -112,9 +112,13 @@ def _parse(ts: str) -> datetime:
     return datetime.fromisoformat(ts)
 
 
-def merged_prs(client: GitHubClient, repo: str, *, now: datetime, days: int, limit: int) -> list[dict[str, Any]]:
-    """Merged PRs from the last ``days`` days, newest first. Listing is by updated time, descending, so the scan can
-    stop at the first PR last touched before the cutoff (updated_at is never earlier than merged_at)."""
+def merged_prs(
+    client: GitHubClient, repo: str, *, now: datetime, days: int, limit: int, base: str | None = None
+) -> list[dict[str, Any]]:
+    """The ``limit`` most recently merged PRs from the last ``days`` days, newest merge first; with ``base`` only those
+    merged into that branch. Listing is by updated time, descending, so the scan can stop at the first PR last touched
+    before the cutoff (updated_at is never earlier than merged_at). Everything in the window is collected before the
+    cut: a merged PR that was commented on later is listed early, and must not displace a newer merge."""
     cutoff = now - timedelta(days=days)
     found: list[dict[str, Any]] = []
     for pr in paginate(
@@ -124,11 +128,12 @@ def merged_prs(client: GitHubClient, repo: str, *, now: datetime, days: int, lim
     ):
         if _parse(pr["updated_at"]) < cutoff:
             break
+        if base is not None and (pr.get("base") or {}).get("ref") != base:
+            continue
         if pr.get("merged_at") and _parse(pr["merged_at"]) >= cutoff:
             found.append(pr)
-            if len(found) >= limit:
-                break
-    return found
+    found.sort(key=lambda pr: _parse(pr["merged_at"]), reverse=True)
+    return found[:limit]
 
 
 def replay(

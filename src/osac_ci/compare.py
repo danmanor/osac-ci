@@ -72,7 +72,9 @@ class Row:
     gaps: tuple[str, ...]  # required checks that have not passed, as "name: why"
     cause: str = ""  # what a difference comes down to, short enough to count; empty when the two agree
     merged_at: str = ""  # back-fill only: when the PR was merged
-    via_queue: bool = False  # back-fill only: merged by the merge queue (False: merged directly, bypassing the rules)
+    # back-fill only: merged by the merge queue (False: merged directly, bypassing the rules; None: not known, the PR
+    # could not be read, or this is an open PR)
+    via_queue: bool | None = None
 
 
 @dataclass(frozen=True)
@@ -271,7 +273,7 @@ def backfill(
     requirement that names no app is judged on check runs alone. The required checks are today's, not those of the
     time."""
     required = required_contexts(client, repo, branch)
-    prs = merged_prs(client, repo, now=now, days=days, limit=limit)
+    prs = merged_prs(client, repo, now=now, days=days, limit=limit, base=branch)
     org = org or repo.split("/", 1)[0]
 
     def one(pr: dict[str, Any]) -> Row:
@@ -328,7 +330,7 @@ def _cell(text: str, limit: int = 160) -> str:
 
 
 def _route(row: Row) -> str:
-    return "queue" if row.via_queue else "direct"
+    return "queue" if row.via_queue else "direct"  # only rows that were read reach the tables that show it
 
 
 def render(report: Report) -> str:
@@ -341,11 +343,12 @@ def render(report: Report) -> str:
             f"the last {report.days} days, each rebuilt as it stood when it was enqueued (merged by the queue) or "
             "merged (merged directly). Commit statuses are not rebuilt for a past moment.",
             "",
-            "| Outcome | Merged by the queue | Merged directly |",
-            "|---|---|---|",
+            "| Outcome | Merged by the queue | Merged directly | Route unknown |",
+            "|---|---|---|---|",
             *[
-                f"| {o.value} | {sum(r.outcome is o and r.via_queue for r in report.rows)} "
-                f"| {sum(r.outcome is o and not r.via_queue for r in report.rows)} |"
+                f"| {o.value} | {sum(r.outcome is o and r.via_queue is True for r in report.rows)} "
+                f"| {sum(r.outcome is o and r.via_queue is False for r in report.rows)} "
+                f"| {sum(r.outcome is o and r.via_queue is None for r in report.rows)} |"
                 for o in Outcome
             ],
         ]
