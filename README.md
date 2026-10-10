@@ -866,7 +866,7 @@ this order:
 | `skip-not-applicable` | no E2E suite is affected by the changed files (docs only, osac-ui only), by the same path filters the workflows use today; a file list that is incomplete (the API stops at 3000) never skips a suite |
 | `blocked-changes-requested` | someone with write access has an unresolved request for changes (CodeRabbit's advice never blocks) |
 | `wait-approval` | nobody with write access (owner, member, collaborator), and not CodeRabbit, has approved the head commit; the author cannot approve their own PR |
-| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates and `check-labels`); checked with the same meaning of "passed" as `compare`, including the app a check must come from |
+| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates and `check-labels`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
 | `wait-cheap-checks` | a cheap check has not finished or has not reported |
 | `start` | none of the above; the suites to start are listed |
 

@@ -219,3 +219,32 @@ def test_a_pr_with_the_most_files_the_api_lists_is_not_trusted_to_be_docs_only()
     assert not inputs.changed_files_known and decide(inputs).action is Action.START
     short = fetch_inputs(world(files=names[:2999], reviews=(approval(),)), POLICY, REPO, 7)
     assert short.changed_files_known and decide(short).action is Action.SKIP_NOT_APPLICABLE
+
+
+def test_statuses_are_read_only_when_a_cheap_requirement_names_no_app() -> None:
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    fetch_inputs(fake, POLICY, REPO, 7)
+    assert not [c for c in fake.calls if c[1].endswith("/status")]  # every required check names the Actions app
+
+    fake = world(reviews=(approval(),), checks=(check("pre-commit"),))
+    fake.add(
+        "GET",
+        f"{BASE}/rules/branches/main",
+        [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci/legacy"}]}}],
+    )
+    fake.add("GET", f"{BASE}/commits/{SHA}/status", {"statuses": [{"context": "ci/legacy", "state": "success"}]})
+    d = decide(fetch_inputs(fake, POLICY, REPO, 7))
+    assert d.action is Action.START
+    assert [c for c in fake.calls if c[1].endswith("/status")]
+
+
+def test_a_failure_to_read_the_statuses_is_an_error_not_a_start() -> None:
+    fake = world(reviews=(approval(),))
+    fake.add(
+        "GET",
+        f"{BASE}/rules/branches/main",
+        [{"type": "required_status_checks", "parameters": {"required_status_checks": [{"context": "ci/legacy"}]}}],
+    )
+    fake.add("GET", f"{BASE}/commits/{SHA}/status", {"message": "boom"}, status=500)
+    with pytest.raises(GitHubError):
+        fetch_inputs(fake, POLICY, REPO, 7)

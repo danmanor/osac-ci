@@ -20,11 +20,11 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import StrEnum
 from typing import Any
 
-from osac_ci.compare import Requirement, required_contexts, unmet
+from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
 from osac_ci.github.api import GitHubClient, check_repo, get, paginate
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
@@ -82,6 +82,9 @@ class Inputs:
     cheap: tuple[Requirement, ...]  # the required checks the E2E waits for
     suites: tuple[Suite, ...]
     filters: Mapping[str, Sequence[str]]
+    # Legacy commit statuses (context -> state) on the head commit. Read only when a cheap requirement names no app, as
+    # only such a requirement can be met by a status.
+    statuses: Mapping[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -158,7 +161,7 @@ def _e2e_checks(inputs: Inputs) -> tuple[str, ...]:
 def decide(inputs: Inputs) -> Decision:
     approvers, stale, blocking = approvals(inputs)
     snapshot = Snapshot(repo="", number=inputs.number, head_sha=inputs.head_sha, check_runs=inputs.check_runs)
-    gaps = unmet(snapshot, inputs.cheap)
+    gaps = unmet(snapshot, inputs.cheap, inputs.statuses)
     failed = tuple(g for g, s in gaps if s is JobStatus.FAILED)
     pending = tuple(g for g, s in gaps if s is not JobStatus.FAILED)
     base = {
@@ -269,6 +272,8 @@ def fetch_inputs(client: GitHubClient, policy: Policy, repo: str, number: int, *
         files.append(str(raw["filename"]))
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
+    # One more request, and only when a requirement exists that a commit status could also satisfy.
+    statuses = fetch_statuses(client, repo, head_sha) if any(r.integration_id is None for r in cheap) else {}
     return Inputs(
         number=number,
         head_sha=head_sha,
@@ -282,6 +287,7 @@ def fetch_inputs(client: GitHubClient, policy: Policy, repo: str, number: int, *
         cheap=cheap,
         suites=suites,
         filters=policy.path_filters.filters,
+        statuses=statuses,
     )
 
 

@@ -235,3 +235,24 @@ def test_the_json_round_trips_the_decision() -> None:
     data = json.loads(to_json(decide(inputs())))
     assert data["action"] == "start" and data["number"] == 7 and data["suites"] == ["vmaas", "caas"]
     assert data["approvers"] == ["bob"] and data["head_sha"] == HEAD
+
+
+# commit statuses ---------------------------------------------------------------------------------------------------
+
+
+def test_a_commit_status_satisfies_a_cheap_requirement_that_names_no_app() -> None:
+    cheap = (Requirement("lint", APP), Requirement("legacy-status"))
+    d = decide(inputs(cheap=cheap, check_runs=(run("lint"),), statuses={"legacy-status": "success"}))
+    assert d.starts
+
+
+@pytest.mark.parametrize("state", ["pending", "failure", "error"])
+def test_a_commit_status_that_is_not_success_does_not_satisfy_it(state: str) -> None:
+    cheap = (Requirement("legacy-status"),)
+    d = decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": state}))
+    assert not d.starts and (d.cheap_failed or d.cheap_pending)
+
+
+def test_a_commit_status_does_not_satisfy_a_requirement_that_names_an_app() -> None:
+    cheap = (Requirement("legacy-status", APP),)
+    assert decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": "success"})).action is Action.WAIT_CHEAP
