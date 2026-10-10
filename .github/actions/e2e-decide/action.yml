@@ -1,0 +1,76 @@
+---
+name: Decide whether the E2E should start
+description: >-
+  Say whether the full-install E2E should start for a pull request now (approved by a person with write access or
+  CodeRabbit, the cheap checks passed, the change affects an E2E suite) and why, as a job summary and a JSON file. It
+  starts nothing: a repository runs it as a dry run next to its current flow. Called from a workflow of the
+  repository, pinned to a commit of osac-ci, like the publish action.
+
+# The calling workflow decides when this runs and what token it holds (read access to pull requests and checks is
+# enough). This action never checks out the calling repository, so it cannot run pull request code. Every input
+# reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token that can read pull requests, reviews and checks (normally the job's built-in token)
+    required: true
+  repo:
+    description: Repository to read, owner/name
+    required: true
+  policy:
+    description: Policy file, relative to the root of osac-ci at the pinned commit
+    default: policy/osac.yml
+  number:
+    description: Pull request number (exactly one). Empty means the pull request is found from head-sha
+    default: ""
+  head-sha:
+    description: >-
+      Head commit of the workflow run that finished (from a workflow_run event). The open pull request(s) with exactly
+      this head are evaluated
+    default: ""
+
+outputs:
+  json-file:
+    description: Path of the JSON file with one decision per pull request (empty when none was evaluated)
+    value: ${{ steps.decide.outputs.json-file }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Decide
+      id: decide
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        POLICY: ${{ inputs.policy }}
+        NUMBER: ${{ inputs.number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        ACTION_PATH: ${{ github.action_path }}
+        OUT_DIR: ${{ runner.temp }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        if [ -n "$NUMBER" ]; then
+          case "$NUMBER" in
+            *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+          esac
+          which=(--number "$NUMBER")
+        elif [ -n "$HEAD_SHA" ]; then
+          case "$HEAD_SHA" in
+            *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+          esac
+          if [ "${#HEAD_SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
+          which=(--head-sha "$HEAD_SHA")
+        else
+          echo "::notice::Neither a pull request number nor a head commit was given; nothing to decide."
+          echo "json-file=" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        json="$OUT_DIR/e2e-decision.json"
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci e2e-decide --policy "$root/$POLICY" --repo "$REPO" "${which[@]}" \
+          --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        echo "json-file=$json" >> "$GITHUB_OUTPUT"

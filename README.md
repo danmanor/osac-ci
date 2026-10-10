@@ -263,6 +263,7 @@ If an external contributor's PR is made by a trusted bot (for example Dependabot
 | Publisher | `src/osac_ci/publish.py` | Posts the verdict as the *OSAC CI* check run, for a PR or for a merge-queue commit; the sweep budget lives here. |
 | Authorizer | `src/osac_ci/authorize.py` | Handles `/ok-to-test <sha>` and `/override <sha> <reason>` comments. |
 | Report | `src/osac_ci/report.py`, `render.py` | A table of every open PR (markdown, HTML, JSON). |
+| E2E start | `src/osac_ci/e2e_start.py` | Says whether the full-install E2E should start for a PR now and why (a dry run: it starts nothing). |
 | Compare | `src/osac_ci/compare.py` | On every open PR, compares "OSAC CI says ready" with "every required check passed". |
 | Replay | `src/osac_ci/replay.py` | Compares the planner's answers with merged PRs. `parity/explained.yaml` lists signed-off disagreements. |
 | CLI | `src/osac_ci/cli.py` | The `osac-ci` command. |
@@ -290,11 +291,12 @@ uv run osac-ci explain --policy policy/osac.yml --snapshot some-snapshot.json   
 GH_TOKEN=... uv run osac-ci explain-pr --policy policy/osac.yml --repo osac-project/osac --number 1438
 GH_TOKEN=... uv run osac-ci report  --policy policy/osac.yml --repo osac-project/osac --out-dir report
 GH_TOKEN=... uv run osac-ci compare --policy policy/osac.yml --repo osac-project/osac
+GH_TOKEN=... uv run osac-ci e2e-decide --policy policy/osac.yml --repo osac-project/osac --number 1543
 GH_TOKEN=... uv run osac-ci replay  --policy policy/osac.yml --repo osac-project/osac --days 60 --limit 100
 GH_TOKEN=... uv run osac-ci publish --policy policy/osac-ci.yml --repo osac-project/osac-ci --number 12 --dry-run
 ```
 
-`policy check`, `explain`, `explain-pr`, `report`, `compare` and `replay` only read. `publish`, `publish-queue` and `authorize`
+`policy check`, `explain`, `explain-pr`, `report`, `compare`, `e2e-decide` and `replay` only read. `publish`, `publish-queue` and `authorize`
 write check runs; `--dry-run` prints instead.
 
 ## Policy reference
@@ -846,6 +848,36 @@ requirement that names no app is judged on check runs alone.
 The command exits 0 whatever it finds; `--fail-on-looser` exits 1 when there is a `looser` row. `--json` prints JSON
 instead of markdown, and `--json-file PATH` writes the JSON next to the markdown so one run gives both. The
 `compare-required-checks` workflow runs it every day and keeps the files as an artifact and in the job summary.
+
+### Deciding when the E2E starts (dry run)
+
+```bash
+GH_TOKEN=$(gh auth token) uv run osac-ci e2e-decide --policy policy/osac.yml --repo osac-project/osac --number 1543
+```
+
+The full-install E2E takes about 100 minutes of a real cluster, so it should start only for a pull request that is ready,
+not on every push. `e2e-decide` answers "should it start for this pull request now?" from the current state of the PR,
+and says why. It starts nothing and always exits 0 (3 when GitHub could not be read, never a guess). The answer is, in
+this order:
+
+| Answer | When |
+|---|---|
+| `skip-closed`, `skip-draft` | the PR is not open, or is a draft |
+| `skip-not-applicable` | no E2E suite is affected by the changed files (docs only, osac-ui only), by the same path filters the workflows use today; a file list that is incomplete (the API stops at 3000) never skips a suite |
+| `blocked-changes-requested` | someone with write access has an unresolved request for changes (CodeRabbit's advice never blocks) |
+| `wait-approval` | nobody with write access (owner, member, collaborator), and not CodeRabbit, has approved the head commit; the author cannot approve their own PR |
+| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates and `check-labels`); checked with the same meaning of "passed" as `compare`, including the app a check must come from |
+| `wait-cheap-checks` | a cheap check has not finished or has not reported |
+| `start` | none of the above; the suites to start are listed |
+
+An approval counts only when it is on the current head commit. GitHub keeps an approval through a clean rebase and moves it
+to the new head (the repository has to dismiss stale approvals on push, so a real change drops it); a review left on an
+older commit is listed as "approval on an older commit (not counted)", so a repository without that rule is never read as
+approved by a stale review. The summary also lists the E2E checks that are already on the commit, which is what the
+current label-based flow did, so the two can be compared.
+
+`.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
+commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
 
 ### Replay (parity evidence)
 
