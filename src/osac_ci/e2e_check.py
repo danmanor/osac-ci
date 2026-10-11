@@ -161,8 +161,7 @@ def _cancel_dead(existing: Existing) -> Write:
         "Cancelled: the run ended without a result",
         f"Run {existing.run_id or 'unknown'} stopped before it reported a result.",
         existing.external_id,
-        link=True,
-    )
+    )  # no link: the invocation's run is the NEW one, not the run this check names
 
 
 def _claim(entry: Mapping[str, Any], patch_id: int | None, run_id: int) -> Write:

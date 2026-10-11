@@ -273,6 +273,15 @@ def test_a_run_that_died_is_cancelled_in_the_check_and_the_e2e_starts_again() ->
     assert world.checks[-1]["external_id"] == f"run:{RUN}" and world.checks[-1]["status"] == "in_progress"
 
 
+def test_the_cancelled_check_does_not_link_to_the_new_run_and_the_new_check_does() -> None:
+    # the cancelled check names the old run; the invocation's URL is the new run's, so it would point at the wrong run
+    world = World(runs={})
+    dead = world.add(external_id=f"run:{OTHER_RUN}")
+    run_report(world, entry("start"))
+    assert "Open the workflow run" not in dead["output"]["summary"] and not dead.get("details_url")
+    assert world.checks[-1]["output"]["summary"].endswith(f"[Open the workflow run]({URL})")
+
+
 def test_a_run_that_completed_without_finishing_its_check_counts_as_dead() -> None:
     world = World(runs={OTHER_RUN: "completed"})
     dead = world.add(external_id=f"run:{OTHER_RUN}")
