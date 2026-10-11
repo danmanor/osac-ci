@@ -1,0 +1,76 @@
+---
+name: Record the result of the E2E on the pull request
+description: >-
+  Complete the pull request's check named E2E with how the suites ended (success, failure or cancelled), on the check the
+  e2e-report action claimed. Run it as the last job of the workflow, whatever happened before. Called from a workflow of
+  the repository that runs on the default branch, pinned to a commit of osac-ci, like the other actions.
+
+# The calling workflow decides when this runs and what token it holds (checks: write). This action never checks out the
+# calling repository, so it cannot run pull request code. Every input reaches the shell through an environment variable,
+# never through the script text.
+inputs:
+  github-token:
+    description: Token that can write check runs (normally the job's built-in token)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  sha:
+    description: The head commit the E2E ran for (the sha output of e2e-report)
+    required: true
+  check-id:
+    description: The check run the report claimed (the check-id output of e2e-report); empty creates a completed one
+    default: ""
+  result:
+    description: success, failure or cancelled
+    required: true
+  detail:
+    description: Text for the check; empty means a sentence for the result
+    default: ""
+  run-id:
+    description: The workflow run that ran the suites
+    default: ${{ github.run_id }}
+  run-url:
+    description: Link of that run, shown on the check
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Finish
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        SHA: ${{ inputs.sha }}
+        CHECK_ID: ${{ inputs.check-id }}
+        RESULT: ${{ inputs.result }}
+        DETAIL: ${{ inputs.detail }}
+        RUN_ID: ${{ inputs.run-id }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$RESULT" in
+          success | failure | cancelled) ;;
+          *) echo "::error::The result must be success, failure or cancelled."; exit 1 ;;
+        esac
+        case "$SHA" in
+          "" | *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+        esac
+        if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
+        case "$CHECK_ID" in
+          *[!0-9]*) echo "::error::The check id must be digits only."; exit 1 ;;
+        esac
+        case "$RUN_ID" in
+          "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;;
+        esac
+        args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-id "$RUN_ID" --run-url="$RUN_URL")
+        if [ -n "$CHECK_ID" ]; then args+=(--check-id "$CHECK_ID"); fi
+        if [ -n "$DETAIL" ]; then args+=(--detail="$DETAIL"); fi
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci e2e-finish "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

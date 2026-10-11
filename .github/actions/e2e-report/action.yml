@@ -1,0 +1,99 @@
+---
+name: Show the E2E decision on the pull request and claim the start
+description: >-
+  Take the answer of e2e-decide and keep the pull request's single check named E2E up to date: what the E2E waits for,
+  that the change is not affected, or that this workflow run has claimed the start. Answers start=true only to the one run
+  that may start the suites (a commit gets its E2E once; a run that died is cancelled in the check and replaced). Called
+  from a workflow of the repository that runs on the default branch, pinned to a commit of osac-ci, like the other
+  actions.
+
+# The calling workflow decides when this runs and what token it holds: checks: write (to write the check), actions: read
+# (to ask whether an earlier run is still going) and pull-requests: read. This action never checks out the calling
+# repository, so it cannot run pull request code. Every input reaches the shell through an environment variable, never
+# through the script text.
+inputs:
+  github-token:
+    description: Token that can write check runs and read workflow runs (normally the job's built-in token)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  decision-file:
+    description: The json-file output of the e2e-decide action (empty or missing means there is nothing to report)
+    default: ""
+  run-id:
+    description: The workflow run that would start the suites
+    default: ${{ github.run_id }}
+  run-url:
+    description: Link of that run, shown on the check
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+outputs:
+  start:
+    description: >-
+      "true" only for the one run that may start the suites now. A string: compare it with 'true' (the string "false" is
+      truthy in an expression)
+    value: ${{ steps.report.outputs.start }}
+  check-id:
+    description: The check run the answer is about (empty when there is none)
+    value: ${{ steps.report.outputs.check-id }}
+  sha:
+    description: The head commit the answer is for (empty when nothing was reported)
+    value: ${{ steps.report.outputs.sha }}
+  state:
+    description: waiting, running, not-affected, already-running, already-ran or ignored
+    value: ${{ steps.report.outputs.state }}
+  suites:
+    description: JSON list of the suites the change affects, such as ["vmaas","caas"]
+    value: ${{ steps.report.outputs.suites }}
+  number:
+    description: Number of the pull request (empty when nothing was reported)
+    value: ${{ steps.report.outputs.number }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Report
+      id: report
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        DECISION: ${{ inputs.decision-file }}
+        RUN_ID: ${{ inputs.run-id }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+        OUT_DIR: ${{ runner.temp }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$RUN_ID" in
+          "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;;
+        esac
+        if [ -z "$DECISION" ] || [ ! -s "$DECISION" ]; then
+          echo "::notice::There is no decision to report."
+          {
+            echo "start=false"
+            echo "check-id="
+            echo "sha="
+            echo "state=ignored"
+            echo "suites=[]"
+            echo "number="
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        json="$OUT_DIR/e2e-report.json"
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci e2e-report --repo "$REPO" --decision-file "$DECISION" \
+          --run-id "$RUN_ID" --run-url="$RUN_URL" --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        {
+          echo "start=$(jq -r '.start' "$json")"
+          echo "check-id=$(jq -r '.check_id // empty' "$json")"
+          echo "sha=$(jq -r '.sha' "$json")"
+          echo "state=$(jq -r '.state' "$json")"
+          echo "suites=$(jq -c '.suites' "$json")"
+          echo "number=$(jq -r '.number // empty' "$json")"
+        } >> "$GITHUB_OUTPUT"

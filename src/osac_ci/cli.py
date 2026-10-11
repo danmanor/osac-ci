@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci import bot_approve, e2e_start, lockfacts
+from osac_ci import bot_approve, e2e_check, e2e_start, lockfacts
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
@@ -326,6 +326,26 @@ def _parser() -> argparse.ArgumentParser:
     dec.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     dec.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
 
+    erep = sub.add_parser(
+        "e2e-report",
+        help="show the e2e-decide answer on the pull request as the one E2E check, and say whether this run starts it",
+    )
+    erep.add_argument("--repo", required=True, help="owner/name")
+    erep.add_argument("--decision-file", type=Path, required=True, help="the JSON file written by e2e-decide")
+    erep.add_argument("--run-id", type=int, required=True, help="the workflow run that would start the suites")
+    erep.add_argument("--run-url", default="", help="link of that run, shown on the check")
+    erep.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    erep.add_argument("--json-file", type=Path, help="also write the JSON answer here")
+
+    efin = sub.add_parser("e2e-finish", help="record how the suites ended on the E2E check the report claimed")
+    efin.add_argument("--repo", required=True, help="owner/name")
+    efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
+    efin.add_argument("--check-id", type=int, help="the check run the report claimed (a new one when absent)")
+    efin.add_argument("--result", required=True, choices=e2e_check.RESULTS)
+    efin.add_argument("--run-id", type=int, required=True)
+    efin.add_argument("--run-url", default="")
+    efin.add_argument("--detail", default="", help="text for the check (default: a sentence for the result)")
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -375,6 +395,25 @@ def _decide_command(
     return 0
 
 
+def _e2e_report(args: argparse.Namespace) -> int:
+    try:
+        entries = json.loads(args.decision_file.read_text(encoding="utf-8"))
+        if not isinstance(entries, list):
+            raise ValueError("the decision file must hold a list")
+        found = e2e_check.report(build_client(), args.repo, entries, args.run_id, args.run_url)
+    except (OSError, GitHubError, KeyError, ValueError) as exc:
+        print(f"error: e2e-report failed: {exc}", file=sys.stderr)
+        return 3
+    if args.json_file:
+        try:
+            args.json_file.write_text(e2e_check.to_json(found) + "\n", encoding="utf-8")
+        except OSError as exc:
+            print(f"error: cannot write {args.json_file}: {exc}", file=sys.stderr)
+            return 3
+    print(e2e_check.to_json(found) if args.json else e2e_check.render(found), end="")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "find-pr":
@@ -412,6 +451,20 @@ def main(argv: list[str] | None = None) -> int:
             bot_approve.approval_json,
             "bot-approve",
         )
+
+    if args.command == "e2e-report":
+        return _e2e_report(args)
+
+    if args.command == "e2e-finish":
+        try:
+            check_id = e2e_check.finish(
+                build_client(), args.repo, args.sha, args.check_id, args.result, args.run_id, args.run_url, args.detail
+            )
+        except (GitHubError, KeyError, ValueError) as exc:
+            print(f"error: e2e-finish failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"E2E check {check_id}: {args.result}")
+        return 0
 
     try:
         policy = load_policy(args.policy)

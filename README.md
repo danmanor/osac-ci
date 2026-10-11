@@ -870,7 +870,7 @@ this order:
 | `skip-not-applicable` | no E2E suite is affected by the changed files (docs only, osac-ui only), by the same path filters the workflows use today; a file list that is incomplete (the API stops at 3000) never skips a suite |
 | `blocked-changes-requested` | someone with write access has an unresolved request for changes (CodeRabbit's advice never blocks) |
 | `wait-approval` | nobody with write access (owner, member, collaborator), and not CodeRabbit, has approved the head commit; the author cannot approve their own PR |
-| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates, `check-labels` and `jira-reference`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
+| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates, `check-labels`, `jira-reference` and `E2E`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
 | `wait-cheap-checks` | a cheap check has not finished or has not reported |
 | `start` | none of the above; the suites to start are listed |
 
@@ -890,6 +890,35 @@ pull request when exactly one was evaluated, whatever the answer; empty otherwis
 are strings, and the string `false` is truthy in a workflow expression, so test it explicitly, for example
 `if: needs.decide.outputs.ready == 'true'` (or `fromJSON(needs.decide.outputs.ready)`); a bare `if: needs.decide.outputs.ready`
 would start on `false`. A job that needs the list of pull requests reads the JSON file instead.
+
+### Keeping the pull request's E2E check
+
+The full-install E2E starts from a workflow on the default branch, after the pull request is approved and CI has passed, so
+its jobs are not on the pull request. A required check that has not reported blocks the merge without saying why. These two
+commands give the pull request ONE check run named `E2E` and keep it up to date, from the first push to the result.
+Check runs of one name on a commit are judged by the newest, so a stale one never blocks a newer result.
+
+```bash
+GH_TOKEN=... uv run osac-ci e2e-report --repo osac-project/osac --decision-file decision.json --run-id 123 --run-url URL
+GH_TOKEN=... uv run osac-ci e2e-finish --repo osac-project/osac --sha SHA --check-id 77 --result success --run-id 123
+```
+
+`e2e-report` takes the JSON file of `e2e-decide` and shows its answer on the check:
+
+| Answer | The check |
+|---|---|
+| `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | in progress, titled with what it waits for, the reason, the suites the change affects, what failed or has not finished, and a sentence on how the E2E starts. Written again only when the text changes |
+| `skip-not-applicable` | completed, success, "Not affected by this change" |
+| `start` | in progress, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only |
+| `skip-closed` | nothing |
+
+A commit gets its E2E once. A later `start` answer for the same commit starts nothing when another run is still going
+(`already-running`) or a result is already there (`already-ran`: re-run it from its workflow run, or push a new commit). A
+run that ended without leaving a result is cancelled in the check and the E2E starts again. The same workflow run started
+again from the Actions page starts again, with a new check run. Only `E2E` check runs of the GitHub Actions app are read or
+changed. Nothing is written unless exactly one pull request has the head commit. Actions: `e2e-report` (outputs `start`,
+`check-id`, `sha`, `state`, `suites`, `number`; compare `start` with `'true'`) and `e2e-finish` (run it last, whatever
+happened). The token needs `checks: write`, `actions: read` and `pull-requests: read`.
 
 ### Comparing the E2E decision with what the current flow did
 
