@@ -883,6 +883,11 @@ current label-based flow did, so the two can be compared.
 `.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
 commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
 
+Besides `json-file` it has three outputs for a job that acts on the answer: `ready` (`true` only when exactly one pull
+request was evaluated and the answer is `start`; every other case, including no pull request found or several with the same
+head, is `false`, so a job that starts from it fails closed), `reason` (one line) and `suites` (a JSON list such as
+`["vmaas","caas"]`, empty when not ready). A job that needs the list of pull requests reads the JSON file instead.
+
 ### Comparing the E2E decision with what the current flow did
 
 ```bash

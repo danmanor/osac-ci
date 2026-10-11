@@ -38,17 +38,24 @@ def test_the_default_policy_exists_in_this_repository() -> None:
     assert (ROOT / action()["inputs"]["policy"]["default"]).is_file()
 
 
-def run(tmp_path: Path, *, number: str = "", sha: str = "", uv_exit: int = 0):  # type: ignore[no-untyped-def]
+def run(  # type: ignore[no-untyped-def]
+    tmp_path: Path, *, number: str = "", sha: str = "", uv_exit: int = 0, decisions: str = "[]"
+):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
     uv = bin_dir / "uv"
-    uv.write_text(f"#!/bin/bash\necho \"$@\" >> '{tmp_path}/uv-args'\necho 'decision text'\nexit {uv_exit}\n")
+    # The stand-in writes the decisions where the real program is told to write its JSON.
+    uv.write_text(
+        f"#!/bin/bash\necho \"$@\" >> '{tmp_path}/uv-args'\necho 'decision text'\n"
+        'while [ $# -gt 0 ]; do [ "$1" = "--json-file" ] && printf "%s" "$DECISIONS" > "$2"; shift; done\n'
+        f"exit {uv_exit}\n"
+    )
     uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
     out, summary = tmp_path / "output", tmp_path / "summary"
     env = {
         "PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_TOKEN": "t", "REPO": "o/r", "POLICY": "policy/osac.yml",
         "NUMBER": number, "HEAD_SHA": sha, "ACTION_PATH": "/a/b/c", "OUT_DIR": str(tmp_path),
-        "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary),
+        "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary), "DECISIONS": decisions,
     }  # fmt: skip
     done = subprocess.run(["bash", "-c", script()], env=env, capture_output=True, text=True, check=False)
     read = lambda p: p.read_text() if p.exists() else ""  # noqa: E731
@@ -92,3 +99,73 @@ def test_neither_given_is_a_notice_and_not_an_error(tmp_path: Path) -> None:
 def test_a_failing_program_fails_the_step(tmp_path: Path) -> None:
     code, _, _, _, _ = run(tmp_path, number="3", uv_exit=3)
     assert code != 0
+
+
+def outputs(text: str) -> dict[str, str]:
+    return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
+
+
+def decision(action: str, reason: str = "why", suites: tuple[str, ...] = ()) -> dict:
+    return {"number": 1, "head_sha": SHA, "action": action, "reason": reason, "suites": list(suites)}
+
+
+def test_the_declared_outputs_are_the_ones_the_step_writes() -> None:
+    declared = set(action()["outputs"])
+    assert declared == {"json-file", "ready", "reason", "suites"}
+    for name in declared:
+        assert action()["outputs"][name]["value"] == f"${{{{ steps.decide.outputs.{name} }}}}"
+
+
+def test_one_pull_request_with_the_answer_start_is_ready_with_its_suites(tmp_path: Path) -> None:
+    import json
+
+    doc = json.dumps([decision("start", "approved and green", ("vmaas", "caas/netris"))])
+    code, _, output, _, _ = run(tmp_path, number="1", decisions=doc)
+    got = outputs(output)
+    assert code == 0 and got["ready"] == "true"
+    assert got["reason"] == "approved and green" and got["suites"] == '["vmaas","caas/netris"]'
+
+
+@pytest.mark.parametrize(
+    "action_name",
+    ["wait-approval", "wait-cheap-checks", "blocked-cheap-checks-failed", "blocked-changes-requested", "skip-draft",
+     "skip-closed", "skip-not-applicable"],
+)  # fmt: skip
+def test_every_answer_but_start_is_not_ready_and_lists_no_suites(tmp_path: Path, action_name: str) -> None:
+    import json
+
+    doc = json.dumps([decision(action_name, "not yet", ("vmaas",))])
+    _, _, output, _, _ = run(tmp_path, number="1", decisions=doc)
+    got = outputs(output)
+    assert got["ready"] == "false" and got["reason"] == "not yet" and got["suites"] == "[]"
+
+
+def test_no_pull_request_found_is_not_ready(tmp_path: Path) -> None:
+    code, _, output, _, _ = run(tmp_path, sha=SHA, decisions="[]")
+    got = outputs(output)
+    assert code == 0 and got["ready"] == "false" and "no open pull request" in got["reason"] and got["suites"] == "[]"
+
+
+def test_several_pull_requests_with_the_same_head_are_never_ready(tmp_path: Path) -> None:
+    import json
+
+    doc = json.dumps([decision("start", suites=("vmaas",)), decision("start", suites=("vmaas",))])
+    _, _, output, _, _ = run(tmp_path, sha=SHA, decisions=doc)
+    got = outputs(output)
+    assert got["ready"] == "false" and "2 pull requests" in got["reason"] and got["suites"] == "[]"
+
+
+def test_a_reason_with_line_breaks_stays_on_one_output_line(tmp_path: Path) -> None:
+    import json
+
+    doc = json.dumps([decision("wait-approval", "first\nsecond\r\nthird")])
+    _, _, output, _, _ = run(tmp_path, number="1", decisions=doc)
+    assert outputs(output)["reason"].split() == ["first", "second", "third"]
+    assert len([line for line in output.splitlines() if line.startswith("reason=")]) == 1
+    assert all("=" in line for line in output.splitlines())
+
+
+def test_nothing_to_decide_writes_closed_outputs(tmp_path: Path) -> None:
+    _, _, output, _, _ = run(tmp_path)
+    got = outputs(output)
+    assert got["ready"] == "false" and got["suites"] == "[]" and got["json-file"] == ""
