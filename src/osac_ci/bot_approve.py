@@ -2,7 +2,7 @@
 
 Dependabot and Konflux open many small pull requests that only move versions. Under native GitHub approval each would
 need a person. This module answers, from the pull request and its commits, whether an automatic approval is safe, and
-says why not otherwise. It approves nothing itself (a dry run); a workflow acts on the answer.
+says why not otherwise. ``decide`` approves nothing (a dry run); ``approve`` acts on the answer.
 
 The answer is ``approve`` only when ALL of these hold on the exact head commit:
 
@@ -30,12 +30,13 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from osac_ci.github.api import GitHubClient, check_repo, get, paginate
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 
 BOTS = ("dependabot[bot]", "red-hat-konflux-kflux-prd-rh02[bot]")
 GITHUB_COMMITTER = "web-flow"  # GitHub itself: the committer of a commit it signed on someone's behalf
 MAX_COMMITS = 250  # the pull request commits API lists at most this many
 MAX_FILES = 3000  # the pull request files API lists at most this many
+APPROVAL_MARKER = "<!-- osac-ci bot-approve -->"  # in the body of every approval made here: a repeat is not stacked
 
 DEPENDENCY_FILE_NAMES = frozenset(
     {
@@ -214,6 +215,54 @@ def fetch_inputs(client: GitHubClient, repo: str, number: int) -> Inputs:
     )
 
 
+# approving ------------------------------------------------------------------------------------------------------
+
+
+class Result(StrEnum):
+    APPROVED = "approved"
+    ALREADY_APPROVED = "already-approved"
+    NOT_APPROVED = "not-approved"
+
+
+@dataclass(frozen=True)
+class Approval:
+    decision: Decision
+    result: Result
+
+
+def has_approval(client: GitHubClient, repo: str, number: int, head_sha: str) -> bool:
+    """Is there already an approval made here for exactly this commit? A repeated event must not stack reviews."""
+    reviews = paginate(client, f"/repos/{check_repo(repo)}/pulls/{number}/reviews")
+    return any(
+        r.get("state") == "APPROVED" and r.get("commit_id") == head_sha and APPROVAL_MARKER in str(r.get("body") or "")
+        for r in reviews
+    )
+
+
+def approve(read: GitHubClient, write: GitHubClient, repo: str, number: int) -> Approval:
+    """Decide with ``read``, and only for an ``approve`` answer submit an approving review with ``write`` (the bot's
+    own credential) for the very commit the answer was made for. A change of the head, the state or the draft flag
+    between the answer and the review is an error and nothing is submitted; so is GitHub refusing the review."""
+    repo = check_repo(repo)
+    decision = decide(fetch_inputs(read, repo, number))
+    if not decision.approves:
+        return Approval(decision, Result.NOT_APPROVED)
+    base = f"/repos/{repo}/pulls/{number}"
+    now = get(read, base)
+    if str(now["head"]["sha"]) != decision.head_sha or now.get("state") != "open" or now.get("draft"):
+        raise ValueError(f"pull request {number} changed after the decision: nothing was approved")
+    if has_approval(read, repo, number, decision.head_sha):
+        return Approval(decision, Result.ALREADY_APPROVED)
+    body = f"{APPROVAL_MARKER}\nApproved automatically: {decision.reason}."
+    response = write.request(
+        "POST", f"{base}/reviews", body={"commit_id": decision.head_sha, "event": "APPROVE", "body": body}
+    )
+    if response.status not in (200, 201):
+        message = response.data.get("message", "") if isinstance(response.data, dict) else ""
+        raise GitHubError(response.status, f"the approval of pull request {number} was refused: {message}")
+    return Approval(decision, Result.APPROVED)
+
+
 # rendering ------------------------------------------------------------------------------------------------------
 
 
@@ -239,3 +288,14 @@ def to_json(decision: Decision) -> str:
         },
         indent=2,
     )
+
+
+def render_approval(approval: Approval) -> str:
+    d = approval.decision
+    lines = [f"### Bot approval: PR #{d.number} at `{d.head_sha[:7]}`: **{approval.result.value}**", "", d.reason, ""]
+    lines += [f"- {p}" for p in d.problems]
+    return "\n".join(lines).rstrip("\n") + "\n"
+
+
+def approval_json(approval: Approval) -> str:
+    return json.dumps({**json.loads(to_json(approval.decision)), "result": approval.result.value}, indent=2)

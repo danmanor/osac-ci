@@ -40,6 +40,7 @@ from osac_ci.stale import StaleRules
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
 COMMENT_ENV = "OSAC_CI_COMMENT"  # the comment text; it is user input, so it never travels on the command line
+APPROVE_TOKEN_ENV = "OSAC_CI_APPROVE_TOKEN"  # the bot's own credential, used only to submit an approval
 ORG_TOKEN_ENV = "OSAC_CI_ORG_TOKEN"  # optional: a token that can only read the organization (membership, teams)
 
 
@@ -93,6 +94,15 @@ def build_org_client(*, required: bool = False) -> GitHubClient | None:
     if token:
         return HttpClient(token)
     return _NoOrgToken() if required else None
+
+
+def build_approve_client() -> GitHubClient:
+    """The client that submits approvals. Its token is separate from the one that reads, so the read token never needs
+    the right to approve and a missing approval token fails before anything is decided."""
+    token = os.environ.get(APPROVE_TOKEN_ENV)
+    if not token:
+        raise SystemExit(f"error: set {APPROVE_TOKEN_ENV} to the credential that submits the approval")
+    return HttpClient(token)
 
 
 def build_client(*, anonymous_ok: bool = False) -> GitHubClient:
@@ -293,6 +303,17 @@ def _parser() -> argparse.ArgumentParser:
     bot.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     bot.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
 
+    approve = sub.add_parser(
+        "bot-approve",
+        help="approve a dependency-update pull request when bot-decide says so, for the commit it decided on",
+    )
+    approve.add_argument("--repo", required=True, help="owner/name")
+    approve_which = approve.add_mutually_exclusive_group(required=True)
+    approve_which.add_argument("--number", type=int, help="the pull request")
+    approve_which.add_argument("--head-sha", help="the open pull request(s) with exactly this head commit")
+    approve.add_argument("--json", action="store_true", help="print JSON instead of markdown")
+    approve.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
+
     dec = sub.add_parser(
         "e2e-decide",
         help="say whether the full-install E2E should start for a pull request now, and why (starts nothing)",
@@ -380,6 +401,16 @@ def main(argv: list[str] | None = None) -> int:
             bot_approve.render_markdown,
             bot_approve.to_json,
             "bot-decide",
+        )
+
+    if args.command == "bot-approve":
+        write = build_approve_client()
+        return _decide_command(
+            args,
+            lambda client, n: bot_approve.approve(client, write, args.repo, n),
+            bot_approve.render_approval,
+            bot_approve.approval_json,
+            "bot-approve",
         )
 
     try:

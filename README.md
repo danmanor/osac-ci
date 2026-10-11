@@ -301,7 +301,7 @@ GH_TOKEN=... uv run osac-ci publish --policy policy/osac-ci.yml --repo osac-proj
 ```
 
 `policy check`, `explain`, `explain-pr`, `report`, `compare`, `e2e-decide`, `e2e-compare`, `bot-decide` and `replay` only read. `publish`, `publish-queue` and `authorize`
-write check runs; `--dry-run` prints instead.
+write check runs; `--dry-run` prints instead. `bot-approve` submits an approving review (see below).
 
 ## Policy reference
 
@@ -934,6 +934,23 @@ listed, not only the first). The approval would have to be made for the head com
 not covered, and the repository's own rule dismisses it. The author identity alone is metadata: the signature and the
 committer make it hard to forge and the file list limits the harm if it were. `.github/actions/bot-decide` runs it from
 another repository's workflow, pinned to a commit like the other actions.
+
+#### Approving (`bot-approve`)
+
+```bash
+GH_TOKEN=$(gh auth token) OSAC_CI_APPROVE_TOKEN=... uv run osac-ci bot-approve --repo osac-project/osac --number 1569
+```
+
+`bot-approve` makes the same decision and, only for an `approve` answer, submits an approving review. It writes, unlike
+`bot-decide`, and takes two credentials: `GH_TOKEN` (or `GITHUB_TOKEN`) reads, `OSAC_CI_APPROVE_TOKEN` (the approving
+account's or app's own credential) only submits the review, so the reading token never needs the right to approve. The
+command stops before reading anything if the approval credential is missing. The review is made for the commit the answer
+was made for (`commit_id`); the pull request is read once more just before, and a changed head, a closed or draft pull
+request is an error and approves nothing. A repeated event does not stack reviews: an approval of this commit that
+carries the marker of this command is left alone. A refusal by GitHub is an error (exit 3), never an answer. Results:
+`approved`, `already-approved`, `not-approved` (with the reasons of `bot-decide`). `.github/actions/bot-approve` runs it
+from another repository's workflow, with outputs `json-file`, `approved` (a string: compare it with `'true'`) and
+`reason`.
 
 ### Replay (parity evidence)
 

@@ -1,0 +1,105 @@
+---
+name: Approve a bot pull request when it is safe
+description: >-
+  Approve a dependency-update pull request (Dependabot, Konflux) without a person reading it, only when every commit is
+  the bot's own, plain and signed, and only dependency files changed (the same answer as bot-decide). The approval is
+  submitted for the exact head commit the answer was made for, with a separate credential, and is not repeated. Called
+  from a workflow of the repository, pinned to a commit of osac-ci, like the publish action.
+
+# The calling workflow decides when this runs and which tokens it holds: github-token reads pull requests, commits and
+# reviews; approve-token (the bot's own credential) only submits the approving review, so the reading token never needs
+# the right to approve. This action never checks out the calling repository, so it cannot run pull request code. Every
+# input reaches the shell through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token that can read pull requests, commits and reviews (normally the job's built-in token)
+    required: true
+  approve-token:
+    description: Credential of the account or app that approves; it needs the right to review pull requests
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: Pull request number (exactly one). Empty means the pull request is found from head-sha
+    default: ""
+  head-sha:
+    description: >-
+      Head commit of the workflow run that finished (from a workflow_run event). The open pull request(s) with exactly
+      this head are evaluated
+    default: ""
+
+outputs:
+  json-file:
+    description: Path of the JSON file with one entry per pull request (empty when none was evaluated)
+    value: ${{ steps.approve.outputs.json-file }}
+  approved:
+    description: >-
+      "true" only when exactly one pull request was evaluated and it is approved for its head commit now or already
+      was. A string: compare it with 'true' (a bare test of "false" is truthy in an expression)
+    value: ${{ steps.approve.outputs.approved }}
+  reason:
+    description: Why, in one line
+    value: ${{ steps.approve.outputs.reason }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Approve
+      id: approve
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OSAC_CI_APPROVE_TOKEN: ${{ inputs.approve-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        ACTION_PATH: ${{ github.action_path }}
+        OUT_DIR: ${{ runner.temp }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        if [ -n "$NUMBER" ]; then
+          case "$NUMBER" in
+            *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+          esac
+          which=(--number "$NUMBER")
+        elif [ -n "$HEAD_SHA" ]; then
+          case "$HEAD_SHA" in
+            *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
+          esac
+          if [ "${#HEAD_SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
+          which=(--head-sha "$HEAD_SHA")
+        else
+          echo "::notice::Neither a pull request number nor a head commit was given; nothing to approve."
+          {
+            echo "json-file="
+            echo "approved=false"
+            echo "reason=no pull request number or head commit was given"
+          } >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        json="$OUT_DIR/bot-approval.json"
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci bot-approve --repo "$REPO" "${which[@]}" \
+          --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+        # approved only for exactly one pull request that is approved for its head commit
+        count=$(jq 'length' "$json")
+        approved=false
+        reason="no open pull request has this head commit"
+        if [ "$count" -eq 1 ]; then
+          case "$(jq -r '.[0].result' "$json")" in
+            approved | already-approved) approved=true ;;
+          esac
+          reason=$(jq -j '.[0].reason' "$json" | tr '\r\n' '  ')
+        elif [ "$count" -gt 1 ]; then
+          reason="$count pull requests have this head commit; read the JSON file"
+        fi
+        {
+          echo "json-file=$json"
+          echo "approved=$approved"
+          echo "reason=$reason"
+        } >> "$GITHUB_OUTPUT"
