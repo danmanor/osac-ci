@@ -39,7 +39,7 @@ def test_the_default_policy_exists_in_this_repository() -> None:
 
 
 def run(  # type: ignore[no-untyped-def]
-    tmp_path: Path, *, number: str = "", sha: str = "", uv_exit: int = 0, decisions: str = "[]"
+    tmp_path: Path, *, number: str = "", sha: str = "", uv_exit: int = 0, decisions: str = "[]", policy_file: str = ""
 ):
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir(parents=True)
@@ -54,7 +54,8 @@ def run(  # type: ignore[no-untyped-def]
     out, summary = tmp_path / "output", tmp_path / "summary"
     env = {
         "PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_TOKEN": "t", "REPO": "o/r", "POLICY": "policy/osac.yml",
-        "NUMBER": number, "HEAD_SHA": sha, "ACTION_PATH": "/a/b/c", "OUT_DIR": str(tmp_path),
+        "POLICY_FILE": policy_file, "NUMBER": number, "HEAD_SHA": sha, "ACTION_PATH": "/a/b/c",
+        "OUT_DIR": str(tmp_path),
         "GITHUB_OUTPUT": str(out), "GITHUB_STEP_SUMMARY": str(summary), "DECISIONS": decisions,
     }  # fmt: skip
     done = subprocess.run(["bash", "-c", script()], env=env, capture_output=True, text=True, check=False)
@@ -67,6 +68,13 @@ def test_a_number_is_passed_to_the_program_and_its_text_goes_to_the_summary(tmp_
     assert code == 0
     assert "e2e-decide --policy /a/b/c/../../../policy/osac.yml --repo o/r --number 12 --json-file" in args
     assert "decision text" in summary and f"json-file={tmp_path}/e2e-decision.json" in output
+
+
+def test_a_policy_file_replaces_the_policy_of_this_repository(tmp_path: Path) -> None:
+    code, args, _, _, _ = run(tmp_path, number="12", policy_file="/work/base/.github/e2e-policy.yml")
+    assert code == 0
+    assert "e2e-decide --policy /work/base/.github/e2e-policy.yml --repo o/r --number 12" in args
+    assert "policy/osac.yml" not in args
 
 
 def test_a_head_commit_is_passed_instead_when_there_is_no_number(tmp_path: Path) -> None:
