@@ -64,6 +64,14 @@ def test_a_file_list_that_cannot_be_read_is_an_error(tmp_path: Path, capsys: pyt
     assert "cannot read" in capsys.readouterr().err
 
 
+def test_a_file_list_that_is_not_text_is_an_error_too(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    (tmp_path / "policy.yml").write_text(POLICY_TEXT, encoding="utf-8")
+    (tmp_path / "files").write_bytes(b"docs/\xff\xfe.md\n")
+    argv = ["e2e-suites", "--policy", str(tmp_path / "policy.yml"), "--files-from", str(tmp_path / "files")]
+    assert cli.main(argv) == 3
+    assert "cannot read" in capsys.readouterr().err
+
+
 def action() -> dict:
     return yaml.safe_load(ACTION.read_text(encoding="utf-8"))
 

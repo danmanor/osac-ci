@@ -488,7 +488,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "e2e-suites":
         try:
             names = [n for n in args.files_from.read_text(encoding="utf-8").splitlines() if n]
-        except OSError as exc:
+        except (OSError, ValueError) as exc:
             print(f"error: cannot read {args.files_from}: {exc}", file=sys.stderr)
             return 3
         print(json.dumps(list(e2e_start.suites_for_files(policy, names))))
