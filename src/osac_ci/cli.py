@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci import bot_approve, e2e_check, e2e_start, lockfacts
+from osac_ci import bot_approve, e2e_check, e2e_start, e2e_suites_check, lockfacts
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
@@ -355,6 +355,25 @@ def _parser() -> argparse.ArgumentParser:
     efin.add_argument("--run-url", default="")
     efin.add_argument("--detail", default="", help="text for the check (default: a sentence for the result)")
 
+    strack = sub.add_parser(
+        "e2e-suites-track",
+        help="create the E2E / <Suite> checks on the pull request and keep them current until the jobs run",
+    )
+    strack.add_argument("--repo", required=True, help="owner/name")
+    strack.add_argument("--sha", required=True, help="the head commit the suites run for")
+    strack.add_argument("--run-id", type=int, required=True, help="the workflow run that holds the suite jobs")
+    strack.add_argument("--run-url", default="")
+    strack.add_argument("--suites", required=True, help="comma-separated: vmaas,caas,bmaas")
+    strack.add_argument("--timeout", type=float, default=7200, help="seconds to wait for the jobs to get a runner")
+    strack.add_argument("--interval", type=float, default=30, help="seconds between looks")
+
+    ssettle = sub.add_parser("e2e-suites-settle", help="complete the E2E / <Suite> checks with the suite results")
+    ssettle.add_argument("--repo", required=True, help="owner/name")
+    ssettle.add_argument("--sha", required=True)
+    ssettle.add_argument("--run-id", type=int, required=True)
+    ssettle.add_argument("--run-url", default="")
+    ssettle.add_argument("--result", action="append", default=[], metavar="SUITE=RESULT", help="repeat per suite")
+
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
     rep.add_argument("--repo", required=True, help="owner/name")
@@ -423,6 +442,24 @@ def _e2e_report(args: argparse.Namespace) -> int:
     return 0
 
 
+def _e2e_suites(args: argparse.Namespace) -> int:
+    try:
+        if args.command == "e2e-suites-track":
+            suites = [s for s in args.suites.split(",") if s]
+            ids = e2e_suites_check.track(
+                build_client(), args.repo, args.sha, args.run_id, args.run_url, suites,
+                timeout=args.timeout, interval=args.interval,
+            )  # fmt: skip
+        else:
+            results = e2e_suites_check.parse_results(args.result)
+            ids = e2e_suites_check.settle(build_client(), args.repo, args.sha, args.run_id, args.run_url, results)
+    except (GitHubError, KeyError, ValueError) as exc:
+        print(f"error: {args.command} failed: {exc}", file=sys.stderr)
+        return 3
+    print(json.dumps(ids))
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if args.command == "find-pr":
@@ -474,6 +511,9 @@ def main(argv: list[str] | None = None) -> int:
             return 3
         print(f"E2E check {check_id}: {args.result}")
         return 0
+
+    if args.command in ("e2e-suites-track", "e2e-suites-settle"):
+        return _e2e_suites(args)
 
     try:
         policy = load_policy(args.policy)

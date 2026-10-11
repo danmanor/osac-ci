@@ -269,7 +269,16 @@ def run_is_alive(client: GitHubClient, repo: str, run_id: int) -> bool:
     return str(response.data.get("status")) != "completed"
 
 
-def _write(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str) -> int:
+def write_check(
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    write: Write,
+    run_url: str,
+    *,
+    name: str = CHECK_NAME,
+    link_label: str = "Open the workflow run",
+) -> int:
     summary = write.summary
     body: dict[str, Any] = {"status": write.status, "external_id": write.external_id}
     if write.conclusion:
@@ -278,16 +287,16 @@ def _write(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str
         # GitHub keeps the check's own page as its details link when the Actions token writes it, so the link to the
         # workflow run goes into the text, where it can be clicked.
         body["details_url"] = run_url
-        summary = f"{summary}\n\n[Open the workflow run]({run_url})"
+        summary = f"{summary}\n\n[{link_label}]({run_url})"
     body["output"] = {"title": write.title, "summary": summary}
     base = f"/repos/{check_repo(repo)}/check-runs"
     if write.patch_id is None:
-        response = client.request("POST", base, body={**body, "name": CHECK_NAME, "head_sha": sha})
+        response = client.request("POST", base, body={**body, "name": name, "head_sha": sha})
     else:
         response = client.request("PATCH", f"{base}/{write.patch_id}", body=body)
     if response.status not in (200, 201) or not isinstance(response.data, dict):
         message = response.data.get("message", "") if isinstance(response.data, dict) else ""
-        raise GitHubError(response.status, f"writing the {CHECK_NAME} check failed: {message}")
+        raise GitHubError(response.status, f"writing the {name} check failed: {message}")
     return int(response.data["id"])
 
 
@@ -305,7 +314,7 @@ def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]]
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
     check_id = outcome.check_id
     for write in outcome.writes:
-        check_id = _write(client, repo, sha, write, run_url)
+        check_id = write_check(client, repo, sha, write, run_url)
     number = int(entry["number"])
     if outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest check
@@ -344,7 +353,7 @@ def finish(
         }[result]
     )
     write = Write(check_id, "completed", result, title, summary, f"{RUN_PREFIX}{run_id}", link=True)
-    return _write(client, repo, sha, write, run_url)
+    return write_check(client, repo, sha, write, run_url)
 
 
 # rendering ------------------------------------------------------------------------------------------------------
