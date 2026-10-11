@@ -111,7 +111,7 @@ def decision(action: str, reason: str = "why", suites: tuple[str, ...] = ()) -> 
 
 def test_the_declared_outputs_are_the_ones_the_step_writes() -> None:
     declared = set(action()["outputs"])
-    assert declared == {"json-file", "ready", "reason", "suites"}
+    assert declared == {"json-file", "ready", "reason", "suites", "number"}
     for name in declared:
         assert action()["outputs"][name]["value"] == f"${{{{ steps.decide.outputs.{name} }}}}"
 
@@ -168,4 +168,25 @@ def test_a_reason_with_line_breaks_stays_on_one_output_line(tmp_path: Path) -> N
 def test_nothing_to_decide_writes_closed_outputs(tmp_path: Path) -> None:
     _, _, output, _, _ = run(tmp_path)
     got = outputs(output)
-    assert got["ready"] == "false" and got["suites"] == "[]" and got["json-file"] == ""
+    assert got["ready"] == "false" and got["suites"] == "[]" and got["json-file"] == "" and got["number"] == ""
+
+
+def test_the_number_is_given_for_exactly_one_pull_request_whatever_the_answer(tmp_path: Path) -> None:
+    import json
+
+    for answer in ("start", "wait-approval"):
+        sub = tmp_path / answer
+        sub.mkdir()
+        _, _, output, _, _ = run(sub, sha=SHA, decisions=json.dumps([{**decision(answer), "number": 42}]))
+        assert outputs(output)["number"] == "42"
+
+
+def test_no_number_is_given_for_none_or_several_pull_requests(tmp_path: Path) -> None:
+    import json
+
+    none, several = tmp_path / "none", tmp_path / "several"
+    none.mkdir()
+    several.mkdir()
+    assert outputs(run(none, sha=SHA, decisions="[]")[2])["number"] == ""
+    two = json.dumps([decision("start"), decision("start")])
+    assert outputs(run(several, sha=SHA, decisions=two)[2])["number"] == ""

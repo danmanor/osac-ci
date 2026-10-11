@@ -885,7 +885,8 @@ commit of osac-ci like the publish action. The workflow decides when: after the 
 
 Besides `json-file` it has three outputs for a job that acts on the answer: `ready` (`true` only when exactly one pull
 request was evaluated and the answer is `start`; every other case, including no pull request found or several with the same
-head, is `false`), `reason` (one line) and `suites` (a JSON list such as `["vmaas","caas"]`, empty when not ready). Outputs
+head, is `false`), `reason` (one line), `suites` (a JSON list such as `["vmaas","caas"]`, empty when not ready) and `number` (the
+pull request when exactly one was evaluated, whatever the answer; empty otherwise). Outputs
 are strings, and the string `false` is truthy in a workflow expression, so test it explicitly, for example
 `if: needs.decide.outputs.ready == 'true'` (or `fromJSON(needs.decide.outputs.ready)`); a bare `if: needs.decide.outputs.ready`
 would start on `false`. A job that needs the list of pull requests reads the JSON file instead.
