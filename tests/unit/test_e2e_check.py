@@ -105,6 +105,10 @@ def run_report(world: World, *entries: dict[str, Any], run_id: int = RUN) -> e2e
     return report(world, REPO, entries, run_id, URL)
 
 
+def e2e_writes(world: World) -> list[dict[str, Any]]:
+    return [w for w in world.writes if w["context"] == "E2E"]
+
+
 def running(world: World, run: int = OTHER_RUN) -> dict[str, Any]:
     return world.add(description="Running: vmaas, caas", target_url=f"https://x/o/r/actions/runs/{run}")
 
@@ -255,16 +259,52 @@ def test_start_with_no_status_claims_the_e2e_for_this_run_and_links_the_run() ->
     world = World()
     found = run_report(world, entry("start"))
     assert (found.state, found.start) == ("running", True)
-    (post,) = world.writes
+    (post,) = e2e_writes(world)
     assert post["state"] == "pending" and post["description"] == "Running: vmaas, caas" and post["target_url"] == URL
+
+
+def test_the_claim_writes_the_suite_lines_with_it_so_they_appear_together() -> None:
+    world = World()
+    run_report(world, entry("start"))
+    suites = {w["context"]: w for w in world.writes if w["context"] != "E2E"}
+    assert set(suites) == {"E2E / VMaaS", "E2E / CaaS"}
+    assert all(w["state"] == "pending" and w["description"] == "Waiting for a runner" for w in suites.values())
+    assert all(w["target_url"] == URL for w in suites.values())
+
+
+def test_a_claim_replaces_the_suite_lines_an_earlier_attempt_left() -> None:
+    world = World()
+    world.add(context="E2E / VMaaS", state="error", description="Cancelled", target_url=URL)
+    run_report(world, entry("start"))
+    assert world.newest("E2E / VMaaS")["description"] == "Waiting for a runner"
+
+
+def test_a_suite_with_no_line_of_its_own_gets_none_and_does_not_fail_the_claim() -> None:
+    world = World()
+    found = run_report(world, entry("start", suites=["vmaas", "netris"]))
+    assert found.start and {w["context"] for w in world.writes} == {"E2E", "E2E / VMaaS"}
+
+
+def test_waiting_and_not_affected_answers_write_no_suite_lines() -> None:
+    world = World()
+    run_report(world, entry("wait-approval"))
+    run_report(world, entry("skip-not-applicable"))
+    assert {w["context"] for w in world.writes} == {"E2E"}
+
+
+def test_a_claim_another_run_overtook_writes_no_suite_lines() -> None:
+    world = World(runs={OTHER_RUN: "in_progress"})
+    world.after_write = lambda w: running(w)
+    run_report(world, entry("start"))
+    assert {w["context"] for w in world.writes} == {"E2E"}
 
 
 def test_start_turns_the_waiting_status_into_the_running_one() -> None:
     world = World()
     run_report(world, entry("wait-cheap-checks"))
     found = run_report(world, entry("start"))
-    assert found.start and world.newest()["description"] == "Running: vmaas, caas"
-    assert [w["state"] for w in world.writes] == ["pending", "pending"]
+    assert found.start and world.newest()["description"] != "" and len(e2e_writes(world)) == 2
+    assert world.newest("E2E")["description"] == "Running: vmaas, caas"
 
 
 def test_a_second_run_does_not_start_while_the_first_is_alive() -> None:
@@ -292,7 +332,7 @@ def test_the_same_run_asking_twice_keeps_one_claim() -> None:
     world = World()
     run_report(world, entry("start"))
     again = run_report(world, entry("start"))
-    assert again.start and len(world.writes) == 1
+    assert again.start and len(e2e_writes(world)) == 1
 
 
 def test_a_commit_gets_its_e2e_once_a_result_from_another_run_means_no_second_start() -> None:
@@ -386,7 +426,7 @@ def test_the_same_run_started_again_after_its_own_failure_is_claimed_again_and_f
     finish(world, REPO, SHA, "failure", URL)
     assert run_report(world, entry("start")).start
     finish(world, REPO, SHA, "success", URL)
-    assert world.newest()["state"] == "success" and len(world.writes) == 4
+    assert world.newest()["state"] == "success" and len(e2e_writes(world)) == 4
 
 
 def test_a_refused_write_is_an_error_not_a_silent_answer() -> None:

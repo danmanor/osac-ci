@@ -912,7 +912,7 @@ reason in 140 characters; the link goes to the workflow run, whose job summary h
 |---|---|
 | `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
 | `skip-not-applicable` | success, "Not affected by this change" |
-| `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only |
+| `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only. The same step writes `E2E / <Suite>` as "Waiting for a runner" for each suite, so the lines appear together |
 | `skip-closed` | nothing |
 
 A commit gets its E2E once. A later `start` answer for the same commit starts nothing when another run is still going

@@ -20,16 +20,14 @@ import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
-from osac_ci.e2e_check import RESULTS, check_sha, newest_status, post_status, run_of_url
+from osac_ci.e2e_check import RESULTS, SUITE_LABELS, check_sha, newest_status, post_status, run_of_url, suite_context
 from osac_ci.github.api import GitHubClient, check_repo, paginate
 
-LABELS = {"vmaas": "VMaaS", "caas": "CaaS", "bmaas": "BMaaS"}
+LABELS = SUITE_LABELS
 
 
 def context(suite: str) -> str:
-    if suite not in LABELS:
-        raise ValueError(f"unknown suite {suite!r}; expected one of {', '.join(LABELS)}")
-    return f"E2E / {LABELS[suite]}"
+    return suite_context(suite)
 
 
 @dataclass(frozen=True)

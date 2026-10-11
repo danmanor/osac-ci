@@ -45,6 +45,7 @@ NOT_AFFECTED_TITLE = "Not affected by this change"
 RESULTS = ("success", "failure", "cancelled")
 STATES = ("pending", "success", "failure", "error")  # what GitHub accepts for a status
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
+SUITE_LABELS = {"vmaas": "VMaaS", "caas": "CaaS", "bmaas": "BMaaS"}  # the suites that have a line of their own
 
 WAITING_TITLES = {
     "skip-draft": "Waiting: the pull request is a draft",
@@ -107,6 +108,13 @@ class Report:
     start: bool
     suites: tuple[str, ...]
     note: str
+
+
+def suite_context(suite: str) -> str:
+    """The status of one suite, next to ``E2E``: ``E2E / VMaaS``."""
+    if suite not in SUITE_LABELS:
+        raise ValueError(f"unknown suite {suite!r}; expected one of {', '.join(SUITE_LABELS)}")
+    return f"{CONTEXT} / {SUITE_LABELS[suite]}"
 
 
 def describe(text: str) -> str:
@@ -286,6 +294,11 @@ def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]]
         if newest is None or newest.run_id != run_id:
             other = f"run {newest.run_id}" if newest is not None and newest.run_id else "another run"
             return Report(sha, number, "already-running", False, _suites(entry), f"{other} claimed the E2E first")
+        # The suite lines appear together with E2E, not a job start later (and replace a result left by an earlier
+        # attempt of this run). The tracking job keeps them current from here on.
+        for suite in _suites(entry):
+            if suite in SUITE_LABELS:
+                post_status(client, repo, sha, suite_context(suite), "pending", "Waiting for a runner", run_url)
     return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note)
 
 
