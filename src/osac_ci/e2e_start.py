@@ -5,9 +5,12 @@ One question, answered from the current state of the pull request, with the reas
 * the PR is open and not a draft;
 * the change touches something the E2E suites test (the same path filters the workflows use today);
 * a person with write access, or CodeRabbit, has approved the PR, and nobody has requested changes;
-* the cheap checks (every required check except the E2E gates) have passed on the head commit.
+* no cheap check (every required check except the E2E gates) has already failed on the head commit.
 
-Only then does the answer say ``start``. Every other answer says what the PR is waiting for. The function is pure; the
+Only then does the answer say ``start``. The cheap checks do NOT delay the start: the E2E runs in parallel with them
+(the integration tests alone can take an hour), and both must pass for the merge. A check that is still running or has
+not reported is only listed; one that has already failed stops the start, because a commit that is known to be broken
+needs a new commit anyway. Every other answer says what the PR is waiting for. The function is pure; the
 reading of GitHub is in ``fetch_inputs``. It decides nothing by itself: a workflow acts on the answer, and for now the
 answer is only logged (a dry run) next to what the label-based flow does.
 
@@ -47,7 +50,6 @@ class Action(StrEnum):
     WAIT_APPROVAL = "wait-approval"
     BLOCKED_CHANGES_REQUESTED = "blocked-changes-requested"
     BLOCKED_CHEAP_FAILED = "blocked-cheap-checks-failed"
-    WAIT_CHEAP = "wait-cheap-checks"
 
 
 @dataclass(frozen=True)
@@ -220,16 +222,10 @@ def decide(inputs: Inputs) -> Decision:
             suites=names,
             **base,
         )
-    if pending:
-        return Decision(
-            action=Action.WAIT_CHEAP,
-            reason=f"cheap checks not finished: {', '.join(g.split(':')[0] for g in pending)}",
-            suites=names,
-            **base,
-        )
     return Decision(
         action=Action.START,
-        reason=f"approved by {', '.join(approvers)} and every cheap check passed",
+        reason=f"approved by {', '.join(approvers)}"
+        + (f"; CI still running: {', '.join(g.split(':')[0] for g in pending)}" if pending else ""),
         suites=names,
         **base,
     )

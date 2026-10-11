@@ -58,7 +58,7 @@ def inputs(**changes: object) -> Inputs:
     return replace(base, **changes)  # type: ignore[arg-type]
 
 
-def test_an_approved_pr_with_green_cheap_checks_starts_every_affected_suite() -> None:
+def test_an_approved_pr_with_nothing_failed_starts_every_affected_suite() -> None:
     d = decide(inputs())
     assert d.action is Action.START and d.starts
     assert d.suites == ("vmaas", "caas") and d.approvers == ("bob",)
@@ -71,7 +71,6 @@ def test_an_approved_pr_with_green_cheap_checks_starts_every_affected_suite() ->
         ({"draft": True}, Action.SKIP_DRAFT),
         ({"changed_files": ("docs/a.md",)}, Action.SKIP_NOT_APPLICABLE),
         ({"reviews": ()}, Action.WAIT_APPROVAL),
-        ({"check_runs": (run("lint"),)}, Action.WAIT_CHEAP),
         ({"check_runs": (run("lint"), run("test", "failure"))}, Action.BLOCKED_CHEAP_FAILED),
         ({"reviews": (review("bob"), review("carol", "CHANGES_REQUESTED"))}, Action.BLOCKED_CHANGES_REQUESTED),
     ],
@@ -80,6 +79,21 @@ def test_each_reason_to_wait_or_skip(changes: dict[str, object], action: Action)
     d = decide(inputs(**changes))
     assert d.action is action
     assert not d.starts and d.reason
+
+
+def test_cheap_checks_that_are_still_running_do_not_delay_the_start() -> None:
+    d = decide(inputs(check_runs=(run("lint"), run("test", None))))
+    assert d.action is Action.START and d.starts
+    assert d.cheap_pending == ("test: in_progress",) and "CI still running: test" in d.reason
+
+
+def test_cheap_checks_that_have_not_reported_do_not_delay_the_start() -> None:
+    d = decide(inputs(check_runs=()))
+    assert d.starts and d.cheap_pending and "CI still running" in d.reason
+
+
+def test_a_start_with_every_check_passed_does_not_mention_ci() -> None:
+    assert decide(inputs()).reason == "approved by bob"
 
 
 def test_a_closed_pr_is_skipped_before_anything_else() -> None:
@@ -101,7 +115,7 @@ def test_changes_requested_comes_before_the_missing_approval() -> None:
     assert d.action is Action.BLOCKED_CHANGES_REQUESTED and d.changes_requested_by == ("carol",)
 
 
-def test_a_failure_is_reported_ahead_of_checks_still_running() -> None:
+def test_a_failure_stops_the_start_even_while_other_checks_run() -> None:
     d = decide(inputs(check_runs=(run("lint", "failure"), run("test", None))))
     assert d.action is Action.BLOCKED_CHEAP_FAILED
     assert d.cheap_failed == ("lint: conclusion: failure",) and d.cheap_pending == ("test: in_progress",)
@@ -120,7 +134,8 @@ def test_a_skipped_or_neutral_cheap_check_counts_as_passed(conclusion: str) -> N
 
 def test_a_cheap_check_from_the_wrong_app_does_not_count() -> None:
     d = decide(inputs(check_runs=(run("lint"), run("test", app=1))))
-    assert d.action is Action.WAIT_CHEAP and "another app" in d.cheap_pending[0]
+    assert "another app" in d.cheap_pending[0]  # reported as not reported yet; it does not delay the start
+    assert d.starts
 
 
 def test_only_the_affected_suite_is_started() -> None:
@@ -246,13 +261,20 @@ def test_a_commit_status_satisfies_a_cheap_requirement_that_names_no_app() -> No
     assert d.starts
 
 
-@pytest.mark.parametrize("state", ["pending", "failure", "error"])
-def test_a_commit_status_that_is_not_success_does_not_satisfy_it(state: str) -> None:
+@pytest.mark.parametrize("state", ["failure", "error"])
+def test_a_commit_status_that_failed_stops_the_start(state: str) -> None:
     cheap = (Requirement("legacy-status"),)
     d = decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": state}))
-    assert not d.starts and (d.cheap_failed or d.cheap_pending)
+    assert not d.starts and d.cheap_failed
+
+
+def test_a_commit_status_that_is_pending_is_listed_and_does_not_delay_the_start() -> None:
+    cheap = (Requirement("legacy-status"),)
+    d = decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": "pending"}))
+    assert d.starts and d.cheap_pending
 
 
 def test_a_commit_status_does_not_satisfy_a_requirement_that_names_an_app() -> None:
     cheap = (Requirement("legacy-status", APP),)
-    assert decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": "success"})).action is Action.WAIT_CHEAP
+    d = decide(inputs(cheap=cheap, check_runs=(), statuses={"legacy-status": "success"}))
+    assert d.cheap_pending and d.starts

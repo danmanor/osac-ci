@@ -129,7 +129,6 @@ def test_a_pull_request_with_no_check_gets_one_that_says_what_it_waits_for() -> 
         ("wait-approval", "Waiting for an approval"),
         ("blocked-changes-requested", "Waiting: changes were requested"),
         ("blocked-cheap-checks-failed", "Waiting: CI failed"),
-        ("wait-cheap-checks", "Waiting for CI to finish"),
     ],
 )
 def test_every_waiting_answer_has_its_own_title(action: str, title: str) -> None:
@@ -166,11 +165,11 @@ def test_the_same_answer_twice_writes_nothing_the_second_time() -> None:
 def test_a_changed_reason_updates_the_same_check_in_place() -> None:
     world = World()
     run_report(world, entry("wait-approval"))
-    run_report(world, entry("wait-cheap-checks", reason="cheap checks not finished: pre-commit"))
+    run_report(world, entry("skip-draft", reason="the pull request is a draft"))
     assert len(world.checks) == 1 and len(world.posts) == 1
     ((path, body),) = world.patches
     assert path.endswith(f"/check-runs/{world.checks[0]['id']}")
-    assert body["output"]["title"] == "Waiting for CI to finish"
+    assert body["output"]["title"] == "Waiting: the pull request is a draft"
 
 
 def test_a_waiting_answer_never_changes_a_result_that_is_already_there() -> None:
@@ -183,7 +182,7 @@ def test_a_waiting_answer_never_changes_a_result_that_is_already_there() -> None
 def test_a_waiting_answer_does_not_disturb_a_run_that_is_alive() -> None:
     world = World(runs={OTHER_RUN: "in_progress"})
     world.add(external_id=f"run:{OTHER_RUN}")
-    found = run_report(world, entry("wait-cheap-checks"))
+    found = run_report(world, entry("wait-approval"))
     assert found.state == "already-running" and world.writes == []
 
 

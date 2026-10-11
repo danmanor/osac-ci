@@ -136,7 +136,7 @@ def test_one_pull_request_with_the_answer_start_is_ready_with_its_suites(tmp_pat
 
 @pytest.mark.parametrize(
     "action_name",
-    ["wait-approval", "wait-cheap-checks", "blocked-cheap-checks-failed", "blocked-changes-requested", "skip-draft",
+    ["wait-approval", "blocked-cheap-checks-failed", "blocked-changes-requested", "skip-draft",
      "skip-closed", "skip-not-applicable"],
 )  # fmt: skip
 def test_every_answer_but_start_is_not_ready_and_lists_no_suites(tmp_path: Path, action_name: str) -> None:

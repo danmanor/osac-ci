@@ -71,7 +71,6 @@ def test_a_later_run_of_the_job_replaces_an_earlier_one() -> None:
         (Action.SKIP_NOT_APPLICABLE, {"vmaas": "passed"}, Outcome.OLD_ONLY),
         (Action.SKIP_NOT_APPLICABLE, {"vmaas": "not started"}, Outcome.AGREE_WAIT),
         (Action.BLOCKED_CHEAP_FAILED, {"vmaas": "running"}, Outcome.OLD_ONLY),
-        (Action.WAIT_CHEAP, {}, Outcome.AGREE_WAIT),
     ],
 )
 def test_the_outcome_of_a_decision_against_the_current_flow(

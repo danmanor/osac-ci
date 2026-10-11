@@ -1,11 +1,11 @@
 """E2E check: the one required check named ``E2E``, kept by a single workflow from the first push to the result.
 
-The full-install E2E starts from a workflow that runs on the default branch, after the pull request is approved on its
-latest commit and CI has passed. Its jobs are therefore not on the pull request, and a required check that has not
-reported blocks the merge without saying why. This module gives the pull request ONE check run named ``E2E`` and keeps
-it up to date: what the E2E is waiting for, then that it is running, then how it ended (or that the change does not
-affect any suite). Check runs of the same name on a commit are judged by the newest one, so an older one that was left
-behind never blocks a newer result.
+The full-install E2E starts from a workflow that runs on the default branch, after the pull request is approved on
+its latest commit (CI runs in parallel and is not waited for). Its jobs are therefore not on the pull request, and a
+required check that has not reported blocks the merge without saying why. This module gives the pull request ONE check
+run named ``E2E`` and keeps it up to date: what the E2E is waiting for, then that it is running, then how it ended (or
+that the change does not affect any suite). Check runs of the same name on a commit are judged by the newest one, so an
+older one that was left behind never blocks a newer result.
 
 Two operations, both driven by the answer of ``e2e-decide`` (``e2e_start``):
 
@@ -47,7 +47,6 @@ WAITING_TITLES = {
     "wait-approval": "Waiting for an approval",
     "blocked-changes-requested": "Waiting: changes were requested",
     "blocked-cheap-checks-failed": "Waiting: CI failed",
-    "wait-cheap-checks": "Waiting for CI to finish",
 }
 
 
