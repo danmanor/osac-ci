@@ -28,6 +28,7 @@ from enum import StrEnum
 from typing import Any
 
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
+from osac_ci.github.snapshot import COMMIT_SHA
 
 CHECK_NAME = "E2E"
 APP_SLUG = "github-actions"  # the app that owns the check runs of a workflow's built-in token
@@ -229,7 +230,16 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
 # reading and writing GitHub ---------------------------------------------------------------------------------------
 
 
+def _check_sha(sha: str) -> str:
+    """A commit id ends up in a URL path and in a request body: only 40 lower-case hex digits, nothing around them (a
+    trailing newline would pass ``match``, so the whole string has to match)."""
+    if not COMMIT_SHA.fullmatch(sha):
+        raise ValueError(f"invalid commit id: {sha!r}")
+    return sha
+
+
 def latest_check(client: GitHubClient, repo: str, sha: str) -> Existing | None:
+    sha = _check_sha(sha)
     runs = paginate(
         client,
         f"/repos/{check_repo(repo)}/commits/{sha}/check-runs",
@@ -296,7 +306,18 @@ def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]]
     check_id = outcome.check_id
     for write in outcome.writes:
         check_id = _write(client, repo, sha, write, run_url)
-    return Report(sha, int(entry["number"]), outcome.state, outcome.start, check_id, _suites(entry), outcome.note)
+    number = int(entry["number"])
+    if outcome.start:
+        # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest check
+        # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
+        # workflow must also run one decision at a time per commit; this look only narrows the window.
+        newest = latest_check(client, repo, sha)
+        if newest is None or newest.run_id != run_id:
+            other = f"run {newest.run_id}" if newest is not None and newest.run_id else "another run"
+            note = f"{other} claimed the E2E for this commit first"
+            return Report(sha, number, "already-running", False, newest.id if newest else None, _suites(entry), note)
+        check_id = newest.id
+    return Report(sha, number, outcome.state, outcome.start, check_id, _suites(entry), outcome.note)
 
 
 def finish(
@@ -312,6 +333,7 @@ def finish(
     """Record how the suites ended on the check run the report claimed (a new completed one when there is none)."""
     if result not in RESULTS:
         raise ValueError(f"result must be one of {', '.join(RESULTS)}, not {result!r}")
+    sha = _check_sha(sha)
     title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
     summary = (
         detail

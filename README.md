@@ -915,7 +915,9 @@ GH_TOKEN=... uv run osac-ci e2e-finish --repo osac-project/osac --sha SHA --chec
 A commit gets its E2E once. A later `start` answer for the same commit starts nothing when another run is still going
 (`already-running`) or a result is already there (`already-ran`: re-run it from its workflow run, or push a new commit). A
 run that ended without leaving a result is cancelled in the check and the E2E starts again. The same workflow run started
-again from the Actions page starts again, with a new check run. Only `E2E` check runs of the GitHub Actions app are read or
+again from the Actions page starts again, with a new check run. The calling workflow must run one decision at a time per head commit (a `concurrency` group keyed by the commit,
+without cancel-in-progress): `e2e-report` looks again after it claims and refuses a start when another run's claim is
+newer, but only serializing closes the race completely. Only `E2E` check runs of the GitHub Actions app are read or
 changed. Nothing is written unless exactly one pull request has the head commit. Actions: `e2e-report` (outputs `start`,
 `check-id`, `sha`, `state`, `suites`, `number`; compare `start` with `'true'`) and `e2e-finish` (run it last, whatever
 happened). The token needs `checks: write`, `actions: read` and `pull-requests: read`.

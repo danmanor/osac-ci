@@ -7,7 +7,9 @@ description: >-
   from a workflow of the repository that runs on the default branch, pinned to a commit of osac-ci, like the other
   actions.
 
-# The calling workflow decides when this runs and what token it holds: checks: write (to write the check), actions: read
+# The calling workflow must run one decision at a time per head commit (a concurrency group keyed by the commit, without
+# cancel-in-progress), so two runs never claim the same commit together. It decides when this runs and what token it
+# holds: checks: write (to write the check), actions: read
 # (to ask whether an earlier run is still going) and pull-requests: read. This action never checks out the calling
 # repository, so it cannot run pull request code. Every input reaches the shell through an environment variable, never
 # through the script text.

@@ -418,3 +418,61 @@ def test_a_run_id_that_is_not_a_number_is_treated_as_a_run_that_cannot_be_alive(
     odd = Existing(9, "in_progress", "", "run:abc", "", "")
     assert odd.run_id is None
     assert plan(entry("start"), odd, RUN, never).start is True
+
+
+# commit ids ------------------------------------------------------------------------------------------------------
+
+
+BAD_SHAS = ["", "abc", "A" * 40, "a" * 39, "a" * 41, "a" * 40 + "\n", "../" + "a" * 37, "a" * 39 + "/"]
+
+
+@pytest.mark.parametrize("sha", BAD_SHAS)
+def test_a_commit_id_that_is_not_40_lower_case_hex_digits_is_refused_before_any_request(sha: str) -> None:
+    world = World()
+    with pytest.raises(ValueError, match="invalid commit id"):
+        latest_check(world, REPO, sha)
+    with pytest.raises(ValueError, match="invalid commit id"):
+        finish(world, REPO, sha, 1, "success", RUN, URL)
+    with pytest.raises(ValueError, match="invalid commit id"):
+        report(world, REPO, [{**entry("start"), "head_sha": sha}], RUN, URL)
+    assert world.writes == []
+
+
+# two runs claiming the same commit -------------------------------------------------------------------------------
+
+
+class Races(World):
+    """Another run's claim lands right after this run writes its own: both had read 'no claim yet'."""
+
+    def request(self, method: str, path: str, **kw: Any) -> Response:  # type: ignore[no-untyped-def]
+        response = super().request(method, path, **kw)
+        body = kw.get("body")
+        if method in ("POST", "PATCH") and isinstance(body, dict) and body.get("external_id") == f"run:{RUN}":
+            if method == "PATCH":  # the waiting check is taken over by the other run
+                next(c for c in self.checks if c["id"] == int(path.rsplit("/", 1)[1]))["external_id"] = (
+                    f"run:{OTHER_RUN}"
+                )
+            else:
+                self.add(external_id=f"run:{OTHER_RUN}")
+        return response
+
+
+def test_a_claim_that_another_run_overtook_does_not_start_the_suites_when_a_new_check_was_written() -> None:
+    world = Races()
+    found = run_report(world, entry("start"))
+    assert (found.state, found.start) == ("already-running", False)
+    assert "run 400 claimed the E2E for this commit first" in found.note
+    assert found.check_id == world.checks[-1]["id"]
+
+
+def test_a_claim_that_another_run_overtook_does_not_start_the_suites_when_the_waiting_check_was_taken() -> None:
+    world = Races()
+    waiting = world.add(external_id="waiting")
+    found = run_report(world, entry("start"))
+    assert (found.state, found.start) == ("already-running", False) and found.check_id == waiting["id"]
+
+
+def test_a_claim_nobody_overtook_starts_and_reports_the_check_it_re_read() -> None:
+    world = World()
+    found = run_report(world, entry("start"))
+    assert found.start and found.check_id == world.checks[-1]["id"]
