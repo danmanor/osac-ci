@@ -37,8 +37,9 @@ def test_report_writes_the_answer_a_workflow_step_needs(
     assert cli.main(report_args(decision_file(tmp_path, entry("start")), out)) == 0
     answer = json.loads(out.read_text(encoding="utf-8"))
     assert answer["start"] is True and answer["sha"] == SHA and answer["number"] == 7
-    assert answer["check_id"] == world.checks[0]["id"] and answer["suites"] == ["vmaas", "caas"]
-    assert "E2E check: **running** (starting the suites)" in capsys.readouterr().out
+    assert answer["suites"] == ["vmaas", "caas"] and "check_id" not in answer
+    assert world.newest()["description"] == "Running: vmaas, caas"
+    assert "E2E status: **running** (starting the suites)" in capsys.readouterr().out
 
 
 def test_report_can_print_the_answer_as_json(
@@ -86,21 +87,20 @@ def test_a_refused_write_exits_3_and_says_so(
     assert "Resource not accessible" in capsys.readouterr().err
 
 
-def test_finish_records_the_result_on_the_claimed_check(
+def test_finish_records_the_result_as_the_e2e_status(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
     world = World()
-    claimed = world.add(external_id=f"run:{RUN}")
     monkeypatch.setattr(cli, "build_client", lambda **_: world)
-    args = ["e2e-finish", "--repo", REPO, "--sha", SHA, "--check-id", str(claimed["id"]), "--result", "failure"]
-    assert cli.main([*args, "--run-id", str(RUN), "--run-url", URL, "--detail", "caas failed"]) == 0
-    assert claimed["conclusion"] == "failure" and claimed["output"]["summary"].startswith("caas failed")
-    assert f"E2E check {claimed['id']}: failure" in capsys.readouterr().out
+    args = ["e2e-finish", "--repo", REPO, "--sha", SHA, "--result", "failure", "--run-url", URL, "--detail", "caas"]
+    assert cli.main(args) == 0
+    assert (world.newest()["state"], world.newest()["description"]) == ("failure", "Failed: caas")
+    assert world.newest()["target_url"] == URL and "E2E status: failure" in capsys.readouterr().out
 
 
 def test_finish_rejects_a_result_the_check_cannot_have() -> None:
     with pytest.raises(SystemExit):
-        cli.main(["e2e-finish", "--repo", REPO, "--sha", SHA, "--result", "skipped", "--run-id", "1"])
+        cli.main(["e2e-finish", "--repo", REPO, "--sha", SHA, "--result", "skipped"])
 
 
 def test_finish_exits_3_when_github_refuses(
@@ -109,5 +109,5 @@ def test_finish_exits_3_when_github_refuses(
     world = World()
     world.fail_writes = True
     monkeypatch.setattr(cli, "build_client", lambda **_: world)
-    assert cli.main(["e2e-finish", "--repo", REPO, "--sha", SHA, "--result", "success", "--run-id", str(RUN)]) == 3
+    assert cli.main(["e2e-finish", "--repo", REPO, "--sha", SHA, "--result", "success"]) == 3
     assert "e2e-finish failed" in capsys.readouterr().err

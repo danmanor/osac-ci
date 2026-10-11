@@ -337,7 +337,7 @@ def _parser() -> argparse.ArgumentParser:
 
     erep = sub.add_parser(
         "e2e-report",
-        help="show the e2e-decide answer on the pull request as the one E2E check, and say whether this run starts it",
+        help="show the e2e-decide answer on the pull request as the one E2E status, and say whether this run starts it",
     )
     erep.add_argument("--repo", required=True, help="owner/name")
     erep.add_argument("--decision-file", type=Path, required=True, help="the JSON file written by e2e-decide")
@@ -346,14 +346,12 @@ def _parser() -> argparse.ArgumentParser:
     erep.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     erep.add_argument("--json-file", type=Path, help="also write the JSON answer here")
 
-    efin = sub.add_parser("e2e-finish", help="record how the suites ended on the E2E check the report claimed")
+    efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
     efin.add_argument("--sha", required=True, help="the head commit the E2E ran for")
-    efin.add_argument("--check-id", type=int, help="the check run the report claimed (a new one when absent)")
     efin.add_argument("--result", required=True, choices=e2e_check.RESULTS)
-    efin.add_argument("--run-id", type=int, required=True)
-    efin.add_argument("--run-url", default="")
-    efin.add_argument("--detail", default="", help="text for the check (default: a sentence for the result)")
+    efin.add_argument("--run-url", default="", help="link of the workflow run, shown with the status")
+    efin.add_argument("--detail", default="", help="text after the result (default: none)")
 
     strack = sub.add_parser(
         "e2e-suites-track",
@@ -503,13 +501,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "e2e-finish":
         try:
-            check_id = e2e_check.finish(
-                build_client(), args.repo, args.sha, args.check_id, args.result, args.run_id, args.run_url, args.detail
-            )
+            e2e_check.finish(build_client(), args.repo, args.sha, args.result, args.run_url, args.detail)
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: e2e-finish failed: {exc}", file=sys.stderr)
             return 3
-        print(f"E2E check {check_id}: {args.result}")
+        print(f"E2E status: {args.result}")
         return 0
 
     if args.command in ("e2e-suites-track", "e2e-suites-settle"):

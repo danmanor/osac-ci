@@ -1,17 +1,17 @@
 ---
-name: Show each E2E suite as a check on the pull request
+name: Show each E2E suite as a status on the pull request
 description: >-
-  Create a check named "E2E / <Suite>" on the pull request's head commit for each suite that is about to run, and keep it
+  Write a status named "E2E / <Suite>" on the pull request's head commit for each suite that is about to run, and keep it
   current (waiting for a runner, running) with a link to the suite job's logs until every job has a runner. Run it as a
   job next to the suite jobs, in the same workflow run. Called from a workflow of the repository that runs on the default
   branch, pinned to a commit of osac-ci, like the other actions.
 
-# The calling workflow decides when this runs and what token it holds (checks: write, actions: read). This action never
+# The calling workflow decides when this runs and what token it holds (statuses: write, actions: read). This action never
 # checks out the calling repository, so it cannot run pull request code. Every input reaches the shell through an
 # environment variable, never through the script text.
 inputs:
   github-token:
-    description: Token that can write check runs and read workflow runs (normally the job's built-in token)
+    description: Token that can write commit statuses and read workflow runs (normally the job's built-in token)
     required: true
   repo:
     description: Repository, owner/name

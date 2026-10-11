@@ -1,18 +1,18 @@
 ---
 name: Record how each E2E suite ended on the pull request
 description: >-
-  Complete the "E2E / <Suite>" checks created by e2e-suites-track with the result of each suite job (success, failure or
+  Complete the "E2E / <Suite>" statuses written by e2e-suites-track with the result of each suite job (success, failure or
   cancelled), each with a link to its job's logs. Run it as the last job of the workflow, whatever happened before. Called
   from a workflow of the repository that runs on the default branch, pinned to a commit of osac-ci, like the other
   actions.
 
-# The calling workflow decides when this runs and what token it holds (checks: write, actions: read). Run it in a job that
-# needs the job running e2e-suites-track, so a late tracking write cannot reopen a completed check. This action never
+# The calling workflow decides when this runs and what token it holds (statuses: write, actions: read). Run it in a job that
+# needs the job running e2e-suites-track, so a late tracking write cannot reopen a finished suite. This action never
 # checks out the calling repository, so it cannot run pull request code. Every input reaches the shell through an
 # environment variable, never through the script text.
 inputs:
   github-token:
-    description: Token that can write check runs and read workflow runs (normally the job's built-in token)
+    description: Token that can write commit statuses and read workflow runs (normally the job's built-in token)
     required: true
   repo:
     description: Repository, owner/name

@@ -1,16 +1,15 @@
 ---
 name: Record the result of the E2E on the pull request
 description: >-
-  Complete the pull request's check named E2E with how the suites ended (success, failure or cancelled), on the check the
-  e2e-report action claimed. Run it as the last job of the workflow, whatever happened before. Called from a workflow of
+  Write the pull request's E2E status with how the suites ended (success, failure or cancelled). Run it as the last job of the workflow, whatever happened before. Called from a workflow of
   the repository that runs on the default branch, pinned to a commit of osac-ci, like the other actions.
 
-# The calling workflow decides when this runs and what token it holds (checks: write). This action never checks out the
+# The calling workflow decides when this runs and what token it holds (statuses: write). This action never checks out the
 # calling repository, so it cannot run pull request code. Every input reaches the shell through an environment variable,
 # never through the script text.
 inputs:
   github-token:
-    description: Token that can write check runs (normally the job's built-in token)
+    description: Token that can write commit statuses (normally the job's built-in token)
     required: true
   repo:
     description: Repository, owner/name
@@ -18,20 +17,14 @@ inputs:
   sha:
     description: The head commit the E2E ran for (the sha output of e2e-report)
     required: true
-  check-id:
-    description: The check run the report claimed (the check-id output of e2e-report); empty creates a completed one
-    default: ""
   result:
     description: success, failure or cancelled
     required: true
   detail:
-    description: Text for the check; empty means a sentence for the result
+    description: Text after the result in the status; empty means just the result
     default: ""
-  run-id:
-    description: The workflow run that ran the suites
-    default: ${{ github.run_id }}
   run-url:
-    description: Link of that run, shown on the check
+    description: Link of that run, shown with the status
     default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 runs:
@@ -46,10 +39,8 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ inputs.repo }}
         SHA: ${{ inputs.sha }}
-        CHECK_ID: ${{ inputs.check-id }}
         RESULT: ${{ inputs.result }}
         DETAIL: ${{ inputs.detail }}
-        RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
@@ -63,14 +54,7 @@ runs:
           "" | *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
         esac
         if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
-        case "$CHECK_ID" in
-          *[!0-9]*) echo "::error::The check id must be digits only."; exit 1 ;;
-        esac
-        case "$RUN_ID" in
-          "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;;
-        esac
-        args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-id "$RUN_ID" --run-url="$RUN_URL")
-        if [ -n "$CHECK_ID" ]; then args+=(--check-id "$CHECK_ID"); fi
+        args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-url="$RUN_URL")
         if [ -n "$DETAIL" ]; then args+=(--detail="$DETAIL"); fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci e2e-finish "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

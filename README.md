@@ -891,54 +891,59 @@ are strings, and the string `false` is truthy in a workflow expression, so test 
 `if: needs.decide.outputs.ready == 'true'` (or `fromJSON(needs.decide.outputs.ready)`); a bare `if: needs.decide.outputs.ready`
 would start on `false`. A job that needs the list of pull requests reads the JSON file instead.
 
-### Keeping the pull request's E2E check
+### Keeping the pull request's E2E status
 
 The full-install E2E starts from a workflow on the default branch, after the pull request is approved and CI has passed, so
 its jobs are not on the pull request. A required check that has not reported blocks the merge without saying why. These two
-commands give the pull request ONE check run named `E2E` and keep it up to date, from the first push to the result.
-Check runs of one name on a commit are judged by the newest, so a stale one never blocks a newer result.
+commands give the pull request ONE commit status named `E2E` and keep it up to date, from the first push to the result. It is
+a commit status and not a check run on purpose: the pull request page draws statuses, but not check runs that a workflow
+writes through the API (they hang on an unrelated workflow's check group and show as "Expected"). The newest status of a
+context counts, so a status left behind never blocks a newer result.
 
 ```bash
 GH_TOKEN=... uv run osac-ci e2e-report --repo osac-project/osac --decision-file decision.json --run-id 123 --run-url URL
-GH_TOKEN=... uv run osac-ci e2e-finish --repo osac-project/osac --sha SHA --check-id 77 --result success --run-id 123
+GH_TOKEN=... uv run osac-ci e2e-finish --repo osac-project/osac --sha SHA --result success --run-url URL
 ```
 
-`e2e-report` takes the JSON file of `e2e-decide` and shows its answer on the check:
+`e2e-report` takes the JSON file of `e2e-decide` and shows its answer on the status (the description is the title and the
+reason in 140 characters; the link goes to the workflow run, whose job summary has the whole explanation):
 
-| Answer | The check |
+| Answer | The status |
 |---|---|
-| `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | in progress, titled with what it waits for, the reason, the suites the change affects, what failed or has not finished, and a sentence on how the E2E starts. Written again only when the text changes |
-| `skip-not-applicable` | completed, success, "Not affected by this change" |
-| `start` | in progress, "Running: <suites>", with a link to the workflow run in the text (GitHub keeps the check's own page as its details link when the Actions token writes it); the report answers `start=true` to that run only |
+| `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
+| `skip-not-applicable` | success, "Not affected by this change" |
+| `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only |
 | `skip-closed` | nothing |
 
 A commit gets its E2E once. A later `start` answer for the same commit starts nothing when another run is still going
 (`already-running`) or a result is already there (`already-ran`: re-run it from its workflow run, or push a new commit). A
-run that ended without leaving a result is cancelled in the check and the E2E starts again. The same workflow run started
-again from the Actions page starts again, with a new check run. The calling workflow must run one decision at a time per head commit (a `concurrency` group keyed by the commit,
-without cancel-in-progress): `e2e-report` looks again after it claims and refuses a start when another run's claim is
-newer, but only serializing closes the race completely. Only `E2E` check runs of the GitHub Actions app are read or
-changed. Nothing is written unless exactly one pull request has the head commit. Actions: `e2e-report` (outputs `start`,
-`check-id`, `sha`, `state`, `suites`, `number`; compare `start` with `'true'`) and `e2e-finish` (run it last, whatever
-happened). The token needs `checks: write`, `actions: read` and `pull-requests: read`.
+run that ended without leaving a result is replaced and the E2E starts again. The same workflow run started again from the
+Actions page starts again. The run that owns a status is read from its link. The calling workflow must run one decision at a
+time per head commit (a `concurrency` group keyed by the commit, without cancel-in-progress): `e2e-report` looks again after
+it claims and refuses a start when another run's claim is newer, but only serializing closes the race completely. Only
+statuses written by `github-actions[bot]` are read. Nothing is written unless exactly one pull request has the head commit.
+Actions: `e2e-report` (outputs `start`, `sha`, `state`, `suites`, `number`; compare `start` with `'true'`) and `e2e-finish`
+(run it last, whatever happened). The token needs `statuses: write`, `actions: read` and `pull-requests: read`. The ruleset
+requires the context `E2E` (a status carries no app, so the requirement names only the context).
 
-### One check per suite on the pull request
+### One status per suite on the pull request
 
 The suites run in a workflow of the default branch, so their jobs are not listed on the pull request. Two commands put a
-check named `E2E / VMaaS` (or `CaaS`, `BMaaS`) on the pull request's head commit for each suite that runs, so the person
-looking at the pull request sees which suite is running or failed and reaches its log in one click:
+status named `E2E / VMaaS` (or `CaaS`, `BMaaS`) on the pull request's head commit for each suite that runs, so the person
+looking at the pull request sees which suite is running or failed, and its "Details" link goes straight to that suite's job
+logs:
 
 ```bash
 GH_TOKEN=... uv run osac-ci e2e-suites-track --repo osac-project/osac --sha SHA --run-id 123 --suites vmaas,caas
 GH_TOKEN=... uv run osac-ci e2e-suites-settle --repo osac-project/osac --sha SHA --run-id 123 --result vmaas=success --result caas=failure
 ```
 
-`e2e-suites-track` runs next to the suite jobs: it creates the checks, shows "Waiting for a runner" while a suite's job is
-queued, "Running" once it has a runner, links the job, and ends when every job runs (or after `--timeout`).
-`e2e-suites-settle` runs last, in a job that needs the tracking job, whatever happened, and completes each check with the result of its job. A suite that does not
-run has no check. These checks are for people: the required check stays `E2E`. Actions: `e2e-suites-track` (inputs
-`suites`, `sha`, `run-id`) and `e2e-suites-settle` (input `results`, such as `vmaas=success caas=failure`). The token needs
-`checks: write` and `actions: read`.
+`e2e-suites-track` runs next to the suite jobs: it writes "Waiting for a runner" while a suite's job is queued, "Running" once
+it has a runner, links the job, and ends when every job runs (or after `--timeout`). `e2e-suites-settle` runs last, in a job
+that needs the tracking job, whatever happened, and writes each suite's result ("Passed", "Failed", "Cancelled"). It leaves a
+status that belongs to a newer run alone. A suite that does not run has no status. These are for people: the required status
+stays `E2E`. Actions: `e2e-suites-track` (inputs `suites`, `sha`, `run-id`) and `e2e-suites-settle` (input `results`, such as
+`vmaas=success caas=failure`). The token needs `statuses: write` and `actions: read`.
 
 ### Which suites a change needs, without a pull request
 

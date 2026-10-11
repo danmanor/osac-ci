@@ -1,17 +1,31 @@
-"""The E2E check: what each answer of e2e-decide does to the one check run named E2E, and when a run may start the
-suites. The check runs are kept by a small in-memory GitHub that behaves like the real one where it matters here: a
-new check run gets the next id, the newest of a name is the one that counts, an update changes it in place."""
+"""The E2E status: what each answer of e2e-decide does to the one commit status named E2E, and when a run may start the
+suites. The statuses are kept by a small in-memory GitHub that behaves like the real one where it matters here: a
+commit's statuses are listed newest first, the newest of a context is the one that counts, and a status is never
+changed, only followed by a newer one."""
 
 from __future__ import annotations
 
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from typing import Any
 
 import pytest
 
 from osac_ci import e2e_check
-from osac_ci.e2e_check import Existing, Outcome, Phase, Write, finish, latest_check, plan, report
+from osac_ci.e2e_check import (
+    CREATOR,
+    Existing,
+    Phase,
+    Write,
+    describe,
+    existing_from,
+    finish,
+    latest_check,
+    newest_status,
+    plan,
+    report,
+    run_of_url,
+)
 from osac_ci.github.api import GitHubError, Response
 
 pytestmark = pytest.mark.unit
@@ -19,75 +33,59 @@ REPO = "o/r"
 SHA = "a" * 40
 RUN = 500
 OTHER_RUN = 400
-URL = "https://example.invalid/run/500"
+URL = "https://example.invalid/o/r/actions/runs/500"
+OTHER_URL = "https://example.invalid/o/r/actions/runs/400"
 BASE = f"/repos/{REPO}"
 
 
 class World:
-    """GitHub, reduced to check runs of one commit and the status of workflow runs."""
+    """GitHub, reduced to the statuses of one commit and the state of workflow runs."""
 
     def __init__(self, runs: Mapping[int, str] | None = None) -> None:
-        self.checks: list[dict[str, Any]] = []
+        self.statuses: list[dict[str, Any]] = []  # newest first, as GitHub lists them
         self.runs = dict(runs or {})  # workflow run id -> "in_progress" | "completed"; absent = 404
-        self.writes: list[tuple[str, str, dict[str, Any]]] = []
-        self.next_id = 100
+        self.writes: list[dict[str, Any]] = []
         self.fail_writes = False
+        self.after_write: Callable[[World], None] | None = None  # something another run does right after a write
+        self.next_id = 100
 
     def add(self, **fields: Any) -> dict[str, Any]:
-        check = {
+        status: dict[str, Any] = {
             "id": self.next_id,
-            "name": "E2E",
-            "status": "in_progress",
-            "conclusion": None,
-            "external_id": "",
-            "app": {"slug": "github-actions"},
-            "output": {"title": "", "summary": ""},
+            "context": "E2E",
+            "state": "pending",
+            "description": "",
+            "target_url": "",
+            "creator": {"login": CREATOR},
         }
-        check.update(fields)
+        status.update(fields)
         self.next_id += 1
-        self.checks.append(check)
-        return check
+        self.statuses.insert(0, status)
+        return status
 
     def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
-        if method == "GET" and path == f"{BASE}/commits/{SHA}/check-runs":
+        if method == "GET" and path == f"{BASE}/commits/{SHA}/statuses":
             page, per = int((params or {}).get("page", 1)), int((params or {}).get("per_page", 100))
-            return Response(200, {"check_runs": self.checks[(page - 1) * per : page * per]})
+            return Response(200, self.statuses[(page - 1) * per : page * per])
         if method == "GET" and (m := re.fullmatch(rf"{BASE}/actions/runs/(\d+)", path)):
             status = self.runs.get(int(m.group(1)))
             return Response(404, {}) if status is None else Response(200, {"status": status})
-        if method == "POST" and path == f"{BASE}/check-runs":
-            self.writes.append((method, path, body))
+        if method == "POST" and path == f"{BASE}/statuses/{SHA}":
+            self.writes.append(body)
             if self.fail_writes:
                 return Response(403, {"message": "Resource not accessible by integration"})
-            check = self.add(
-                name=body["name"],
-                status=body["status"],
-                conclusion=body.get("conclusion"),
-                external_id=body["external_id"],
-                output=body["output"],
+            self.add(
+                **{k: body[k] for k in ("context", "state", "description") if k in body},
+                target_url=body.get("target_url", ""),
             )
-            check["head_sha"], check["details_url"] = body["head_sha"], body.get("details_url")
-            return Response(201, {"id": check["id"]})
-        if method == "PATCH" and (m := re.fullmatch(rf"{BASE}/check-runs/(\d+)", path)):
-            self.writes.append((method, path, body))
-            check = next(c for c in self.checks if c["id"] == int(m.group(1)))
-            check.update(
-                status=body["status"],
-                conclusion=body.get("conclusion"),
-                external_id=body["external_id"],
-                output=body["output"],
-            )
-            check["details_url"] = body.get("details_url", check.get("details_url"))
-            return Response(200, {"id": check["id"]})
+            if self.after_write is not None:
+                hook, self.after_write = self.after_write, None
+                hook(self)
+            return Response(201, {"id": self.statuses[0]["id"]})
         return Response(404, {"message": f"no route for {method} {path}"})
 
-    @property
-    def posts(self) -> list[dict[str, Any]]:
-        return [b for m, _, b in self.writes if m == "POST"]
-
-    @property
-    def patches(self) -> list[tuple[str, dict[str, Any]]]:
-        return [(p, b) for m, p, b in self.writes if m == "PATCH"]
+    def newest(self, context: str = "E2E") -> dict[str, Any]:
+        return next(s for s in self.statuses if s["context"] == context)
 
 
 def entry(action: str = "wait-approval", **extra: Any) -> dict[str, Any]:
@@ -107,19 +105,68 @@ def run_report(world: World, *entries: dict[str, Any], run_id: int = RUN) -> e2e
     return report(world, REPO, entries, run_id, URL)
 
 
+def running(world: World, run: int = OTHER_RUN) -> dict[str, Any]:
+    return world.add(description="Running: vmaas, caas", target_url=f"https://x/o/r/actions/runs/{run}")
+
+
+# description and reading --------------------------------------------------------------------------------------------
+
+
+def test_a_description_is_one_line_of_at_most_140_characters() -> None:
+    assert describe("a  b\n c") == "a b c"
+    assert describe("x" * 140) == "x" * 140
+    cut = describe("word " * 60)
+    assert len(cut) == 140 and cut.endswith("…")
+
+
+@pytest.mark.parametrize(
+    ("url", "run"),
+    [
+        ("https://github.com/o/r/actions/runs/38171099302", 38171099302),
+        ("https://github.com/o/r/actions/runs/38171099302/job/114575160506", 38171099302),
+        ("https://github.com/o/r/runs/114564073637", None),
+        ("", None),
+    ],
+)
+def test_the_run_is_read_from_the_link(url: str, run: int | None) -> None:
+    assert run_of_url(url) == run
+
+
+def test_a_pending_status_that_says_running_with_a_run_link_is_the_claim_of_that_run() -> None:
+    got = existing_from({"state": "pending", "description": "Running: vmaas", "target_url": OTHER_URL})
+    assert (got.phase, got.run_id) == (Phase.RUNNING, OTHER_RUN)
+
+
+def test_any_other_pending_status_waits_even_with_a_run_link() -> None:
+    got = existing_from({"state": "pending", "description": "Waiting for CI to finish", "target_url": OTHER_URL})
+    assert got.phase is Phase.WAITING and got.run_id is None
+
+
+def test_a_running_status_without_a_run_link_counts_as_waiting() -> None:
+    assert existing_from({"state": "pending", "description": "Running: vmaas", "target_url": ""}).phase is Phase.WAITING
+
+
+def test_the_not_affected_answer_belongs_to_no_run_even_though_its_link_names_one() -> None:
+    got = existing_from({"state": "success", "description": "Not affected by this change", "target_url": OTHER_URL})
+    assert (got.external_id, got.run_id, got.phase) == ("not-affected", None, Phase.DONE)
+
+
+@pytest.mark.parametrize("state", ["success", "failure", "error"])
+def test_a_finished_status_is_the_result_of_the_run_its_link_names(state: str) -> None:
+    got = existing_from({"state": state, "description": "Passed", "target_url": OTHER_URL})
+    assert (got.phase, got.run_id) == (Phase.DONE, OTHER_RUN)
+
+
 # waiting -------------------------------------------------------------------------------------------------------
 
 
-def test_a_pull_request_with_no_check_gets_one_that_says_what_it_waits_for() -> None:
+def test_a_pull_request_with_no_status_gets_one_that_says_what_it_waits_for() -> None:
     world = World()
     found = run_report(world, entry("wait-approval"))
     assert (found.state, found.start) == ("waiting", False)
-    (post,) = world.posts
-    assert post["name"] == "E2E" and post["head_sha"] == SHA and post["status"] == "in_progress"
-    assert post["output"]["title"] == "Waiting for an approval"
-    assert "no approval from a person with write access" in post["output"]["summary"]
-    assert "vmaas, caas" in post["output"]["summary"]
-    assert post["external_id"] == "waiting" and "conclusion" not in post
+    (post,) = world.writes
+    assert post["context"] == "E2E" and post["state"] == "pending" and post["target_url"] == URL
+    assert post["description"].startswith("Waiting for an approval: no approval from a person with write access")
 
 
 @pytest.mark.parametrize(
@@ -134,88 +181,65 @@ def test_a_pull_request_with_no_check_gets_one_that_says_what_it_waits_for() -> 
 )
 def test_every_waiting_answer_has_its_own_title(action: str, title: str) -> None:
     world = World()
-    run_report(world, entry(action))
-    assert world.posts[0]["output"]["title"] == title
+    run_report(world, entry(action, reason="why"))
+    assert world.newest()["description"] == f"{title}: why"
 
 
-def test_the_summary_lists_what_failed_and_what_is_unfinished() -> None:
+def test_a_long_reason_is_cut_to_what_a_status_can_hold() -> None:
     world = World()
-    run_report(
-        world,
-        entry(
-            "blocked-cheap-checks-failed",
-            cheap_failed=["Run unit tests: conclusion: failure"],
-            cheap_pending=["pre-commit: in_progress"],
-            stale_approvals=["bob"],
-        ),
-    )
-    summary = world.posts[0]["output"]["summary"]
-    assert "Failed: Run unit tests: conclusion: failure" in summary
-    assert "Not finished: pre-commit: in_progress" in summary
-    assert "Approved an older commit (does not count): bob" in summary
+    run_report(world, entry("wait-approval", reason="because " * 40))
+    assert len(world.newest()["description"]) == 140
 
 
 def test_the_same_answer_twice_writes_nothing_the_second_time() -> None:
     world = World()
     run_report(world, entry("wait-approval"))
-    before = len(world.writes)
     again = run_report(world, entry("wait-approval"))
-    assert len(world.writes) == before and again.state == "waiting" and again.check_id == world.checks[0]["id"]
+    assert again.state == "waiting" and len(world.writes) == 1
 
 
-def test_a_changed_reason_updates_the_same_check_in_place() -> None:
+def test_a_changed_reason_writes_a_newer_status_for_the_same_context() -> None:
     world = World()
-    run_report(world, entry("wait-approval"))
-    run_report(world, entry("wait-cheap-checks", reason="cheap checks not finished: pre-commit"))
-    assert len(world.checks) == 1 and len(world.posts) == 1
-    ((path, body),) = world.patches
-    assert path.endswith(f"/check-runs/{world.checks[0]['id']}")
-    assert body["output"]["title"] == "Waiting for CI to finish"
+    run_report(world, entry("wait-cheap-checks", reason="CI: not reported yet"))
+    run_report(world, entry("blocked-cheap-checks-failed", reason="cheap checks failed: unit tests"))
+    assert len(world.writes) == 2
+    assert world.newest()["description"] == "Waiting: CI failed: cheap checks failed: unit tests"
 
 
 def test_a_waiting_answer_never_changes_a_result_that_is_already_there() -> None:
     world = World()
-    world.add(status="completed", conclusion="success", external_id=f"run:{OTHER_RUN}")
-    found = run_report(world, entry("blocked-changes-requested"))
+    world.add(state="success", description="Passed", target_url=OTHER_URL)
+    found = run_report(world, entry("wait-approval"))
     assert found.state == "already-ran" and world.writes == []
 
 
 def test_a_waiting_answer_does_not_disturb_a_run_that_is_alive() -> None:
     world = World(runs={OTHER_RUN: "in_progress"})
-    world.add(external_id=f"run:{OTHER_RUN}")
-    found = run_report(world, entry("wait-cheap-checks"))
+    running(world)
+    found = run_report(world, entry("wait-approval"))
     assert found.state == "already-running" and world.writes == []
 
 
-def test_a_run_that_died_leaves_a_check_that_is_cancelled_and_replaced_by_the_waiting_one() -> None:
-    world = World(runs={OTHER_RUN: "completed"})
-    dead = world.add(external_id=f"run:{OTHER_RUN}")
+def test_a_run_that_died_is_replaced_by_the_waiting_status() -> None:
+    world = World(runs={})  # the run is gone: 404
+    running(world)
     found = run_report(world, entry("wait-approval"))
-    assert dead["status"] == "completed" and dead["conclusion"] == "cancelled"
-    assert found.state == "waiting" and world.checks[-1]["external_id"] == "waiting"
+    assert found.state == "waiting" and world.newest()["description"].startswith("Waiting for an approval")
 
 
-# not affected ----------------------------------------------------------------------------------------------------
-
-
-def test_a_change_no_suite_cares_about_gets_a_green_check_saying_so() -> None:
+def test_a_change_no_suite_cares_about_gets_a_green_status_saying_so() -> None:
     world = World()
-    found = run_report(world, entry("skip-not-applicable", suites=[]))
-    assert (found.state, found.start) == ("not-affected", False)
-    (post,) = world.posts
-    assert post["status"] == "completed" and post["conclusion"] == "success"
-    assert post["output"]["title"] == "Not affected by this change"
+    found = run_report(world, entry("skip-not-applicable"))
+    assert found.state == "not-affected"
+    assert (world.newest()["state"], world.newest()["description"]) == ("success", "Not affected by this change")
 
 
-def test_not_affected_twice_writes_once_and_turns_a_waiting_check_green_in_place() -> None:
+def test_not_affected_twice_writes_once_and_turns_a_waiting_status_green() -> None:
     world = World()
-    run_report(world, entry("skip-not-applicable", suites=[]))
-    run_report(world, entry("skip-not-applicable", suites=[]))
-    assert len(world.writes) == 1
-    other = World()
-    waiting = other.add(external_id="waiting")
-    run_report(other, entry("skip-not-applicable", suites=[]))
-    assert waiting["conclusion"] == "success" and len(other.checks) == 1
+    run_report(world, entry("wait-approval"))
+    run_report(world, entry("skip-not-applicable"))
+    run_report(world, entry("skip-not-applicable"))
+    assert [w["state"] for w in world.writes] == ["pending", "success"]
 
 
 def test_a_closed_pull_request_is_left_alone() -> None:
@@ -227,173 +251,142 @@ def test_a_closed_pull_request_is_left_alone() -> None:
 # start ---------------------------------------------------------------------------------------------------------
 
 
-def test_start_with_no_check_claims_the_e2e_for_this_run() -> None:
+def test_start_with_no_status_claims_the_e2e_for_this_run_and_links_the_run() -> None:
     world = World()
     found = run_report(world, entry("start"))
     assert (found.state, found.start) == ("running", True)
-    (post,) = world.posts
-    assert post["status"] == "in_progress" and post["external_id"] == f"run:{RUN}" and post["details_url"] == URL
-    assert post["output"]["title"] == "Running: vmaas, caas"
-    assert found.check_id == world.checks[0]["id"]
+    (post,) = world.writes
+    assert post["state"] == "pending" and post["description"] == "Running: vmaas, caas" and post["target_url"] == URL
 
 
-def test_the_running_check_carries_a_clickable_link_to_the_workflow_run() -> None:
-    # GitHub keeps the check's own page as the details link when the Actions token writes it, so the text has the link
+def test_start_turns_the_waiting_status_into_the_running_one() -> None:
     world = World()
-    run_report(world, entry("start"))
-    assert world.checks[0]["output"]["summary"].endswith(f"[Open the workflow run]({URL})")
-
-
-def test_a_waiting_check_has_no_run_link() -> None:
-    world = World()
-    run_report(world, entry("wait-approval"))
-    assert "Open the workflow run" not in world.checks[0]["output"]["summary"]
-
-
-def test_start_turns_the_waiting_check_into_the_running_one_without_a_second_check() -> None:
-    world = World()
-    waiting = world.add(external_id="waiting")
+    run_report(world, entry("wait-cheap-checks"))
     found = run_report(world, entry("start"))
-    assert found.start and found.check_id == waiting["id"] and len(world.checks) == 1
-    assert waiting["external_id"] == f"run:{RUN}"
+    assert found.start and world.newest()["description"] == "Running: vmaas, caas"
+    assert [w["state"] for w in world.writes] == ["pending", "pending"]
 
 
 def test_a_second_run_does_not_start_while_the_first_is_alive() -> None:
     world = World(runs={OTHER_RUN: "in_progress"})
-    world.add(external_id=f"run:{OTHER_RUN}")
+    running(world)
     found = run_report(world, entry("start"))
     assert (found.state, found.start) == ("already-running", False) and world.writes == []
 
 
-def test_a_run_that_died_is_cancelled_in_the_check_and_the_e2e_starts_again() -> None:
-    world = World(runs={})  # the run is gone: 404
-    dead = world.add(external_id=f"run:{OTHER_RUN}")
-    found = run_report(world, entry("start"))
-    assert found.start and dead["conclusion"] == "cancelled"
-    assert world.checks[-1]["external_id"] == f"run:{RUN}" and world.checks[-1]["status"] == "in_progress"
-
-
-def test_the_cancelled_check_does_not_link_to_the_new_run_and_the_new_check_does() -> None:
-    # the cancelled check names the old run; the invocation's URL is the new run's, so it would point at the wrong run
+def test_a_run_that_died_is_replaced_and_the_e2e_starts_again() -> None:
     world = World(runs={})
-    dead = world.add(external_id=f"run:{OTHER_RUN}")
-    run_report(world, entry("start"))
-    assert "Open the workflow run" not in dead["output"]["summary"] and not dead.get("details_url")
-    assert world.checks[-1]["output"]["summary"].endswith(f"[Open the workflow run]({URL})")
+    running(world)
+    found = run_report(world, entry("start"))
+    assert found.start and "ended without a result" in found.note
+    assert world.newest()["target_url"] == URL
 
 
-def test_a_run_that_completed_without_finishing_its_check_counts_as_dead() -> None:
+def test_a_run_that_completed_without_finishing_counts_as_dead() -> None:
     world = World(runs={OTHER_RUN: "completed"})
-    dead = world.add(external_id=f"run:{OTHER_RUN}")
-    assert run_report(world, entry("start")).start and dead["conclusion"] == "cancelled"
+    running(world)
+    assert run_report(world, entry("start")).start
 
 
 def test_the_same_run_asking_twice_keeps_one_claim() -> None:
-    world = World(runs={RUN: "in_progress"})
-    first = run_report(world, entry("start"))
-    second = run_report(world, entry("start"))
-    assert first.start and second.start and second.check_id == first.check_id and len(world.checks) == 1
+    world = World()
+    run_report(world, entry("start"))
+    again = run_report(world, entry("start"))
+    assert again.start and len(world.writes) == 1
 
 
 def test_a_commit_gets_its_e2e_once_a_result_from_another_run_means_no_second_start() -> None:
-    for conclusion in ("success", "failure", "cancelled"):
-        world = World()
-        world.add(status="completed", conclusion=conclusion, external_id=f"run:{OTHER_RUN}")
-        found = run_report(world, entry("start"))
-        assert (found.state, found.start) == ("already-ran", False) and world.writes == []
-        assert "re-run" in found.note
+    world = World()
+    world.add(state="failure", description="Failed", target_url=OTHER_URL)
+    found = run_report(world, entry("start"))
+    assert (found.state, found.start) == ("already-ran", False) and world.writes == []
+    assert "re-run it from its workflow run" in found.note
 
 
 def test_the_same_workflow_run_started_again_from_the_actions_page_starts_again() -> None:
     world = World()
-    world.add(status="completed", conclusion="failure", external_id=f"run:{RUN}")
+    world.add(state="failure", description="Failed", target_url=URL)  # this very run, an earlier attempt
     found = run_report(world, entry("start"))
-    assert found.start and len(world.checks) == 2
-    assert world.checks[-1]["status"] == "in_progress" and found.check_id == world.checks[-1]["id"]
+    assert found.start and "re-run" in found.note
+    assert world.newest()["description"] == "Running: vmaas, caas"
 
 
-# which check runs count -------------------------------------------------------------------------------------------
+# reading the statuses ------------------------------------------------------------------------------------------
 
 
-def test_only_the_e2e_check_runs_of_the_github_actions_app_are_looked_at() -> None:
+def test_only_statuses_the_github_actions_bot_wrote_are_looked_at() -> None:
     world = World()
-    world.add(external_id=f"run:{OTHER_RUN}", app={"slug": "someone-else"})
-    world.add(name="Unit Tests", external_id=f"run:{OTHER_RUN}")
+    world.add(state="success", description="Passed", creator={"login": "someone"})  # a person's, ignored
+    world.add(context="CodeRabbit", state="success", description="Review completed")
     assert latest_check(world, REPO, SHA) is None
     found = run_report(world, entry("start"))
-    assert found.start and len(world.posts) == 1
+    assert found.start
 
 
-def test_the_newest_check_run_is_the_one_that_counts() -> None:
+def test_the_newest_status_is_the_one_that_counts() -> None:
     world = World()
-    world.add(status="completed", conclusion="failure", external_id=f"run:{OTHER_RUN}")
-    newest = world.add(external_id="waiting")
-    existing = latest_check(world, REPO, SHA)
-    assert existing is not None and existing.id == newest["id"] and existing.phase is Phase.WAITING
+    world.add(state="failure", description="Failed", target_url=OTHER_URL)
+    world.add(description="Waiting for an approval: x")
+    got = latest_check(world, REPO, SHA)
+    assert got is not None and got.phase is Phase.WAITING
 
 
-def test_a_check_run_the_app_left_with_no_external_id_counts_as_waiting() -> None:
+def test_statuses_of_other_contexts_are_not_the_e2e() -> None:
     world = World()
-    world.add()
-    found = run_report(world, entry("start"))
-    assert found.start and len(world.checks) == 1
-
-
-# several or no pull requests -------------------------------------------------------------------------------------
+    world.add(context="E2E / VMaaS", state="success", description="Passed")
+    assert newest_status(world, REPO, SHA, "E2E") is None
+    assert newest_status(world, REPO, SHA, "E2E / VMaaS") is not None
 
 
 def test_nothing_is_written_unless_exactly_one_pull_request_was_decided() -> None:
     world = World()
     none = run_report(world)
-    several = run_report(world, entry("start"), entry("start", number=8))
-    assert none.state == several.state == "ignored" and not none.start and not several.start
+    two = run_report(world, entry("start"), entry("start", number=8))
+    assert (none.state, two.state) == ("ignored", "ignored") and world.writes == []
+
+
+def test_a_decision_that_is_not_an_object_is_an_error_before_anything_is_written() -> None:
+    world = World()
+    with pytest.raises(ValueError, match="object"):
+        report(world, REPO, ["start"], RUN, URL)  # type: ignore[list-item]
     assert world.writes == []
 
 
-# finishing -----------------------------------------------------------------------------------------------------
+# finish --------------------------------------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("result", "title"), [("success", "Passed"), ("failure", "Failed"), ("cancelled", "Cancelled")]
+    ("result", "state", "title"),
+    [("success", "success", "Passed"), ("failure", "failure", "Failed"), ("cancelled", "error", "Cancelled")],
 )
-def test_finish_completes_the_claimed_check_with_the_result(result: str, title: str) -> None:
+def test_finish_writes_the_result_linked_to_the_run(result: str, state: str, title: str) -> None:
     world = World()
     run_report(world, entry("start"))
-    claimed = world.checks[0]["id"]
-    finish(world, REPO, SHA, claimed, result, RUN, URL, "")
-    check = world.checks[0]
-    assert (check["status"], check["conclusion"], check["output"]["title"]) == ("completed", result, title)
-    assert len(world.checks) == 1 and check["details_url"] == URL
-    assert check["output"]["summary"].endswith(f"[Open the workflow run]({URL})")
+    finish(world, REPO, SHA, result, URL)
+    assert (world.newest()["state"], world.newest()["description"]) == (state, title)
+    assert world.newest()["target_url"] == URL
 
 
-def test_finish_without_a_claimed_check_creates_a_completed_one() -> None:
+def test_finish_adds_the_detail_after_the_result() -> None:
     world = World()
-    finish(world, REPO, SHA, None, "failure", RUN, URL, "vmaas failed")
-    (post,) = world.posts
-    assert (
-        post["conclusion"] == "failure"
-        and post["output"]["summary"].startswith("vmaas failed")
-        and post["head_sha"] == SHA
-    )
+    finish(world, REPO, SHA, "failure", URL, "vmaas=failure caas=success")
+    assert world.newest()["description"] == "Failed: vmaas=failure caas=success"
 
 
 def test_finish_refuses_a_result_it_does_not_know() -> None:
-    with pytest.raises(ValueError, match="result must be one of"):
-        finish(World(), REPO, SHA, 1, "skipped", RUN, URL)
-
-
-def test_a_new_result_after_a_failed_run_replaces_it_for_the_pull_request() -> None:
-    """Re-running the same workflow run: the new claim is newer than the failure, and the result is what counts."""
     world = World()
-    world.add(status="completed", conclusion="failure", external_id=f"run:{RUN}")
-    again = run_report(world, entry("start"))
-    finish(world, REPO, SHA, again.check_id, "success", RUN, URL)
-    latest = latest_check(world, REPO, SHA)
-    assert latest is not None and latest.conclusion == "success"
+    with pytest.raises(ValueError, match="result must be one of"):
+        finish(world, REPO, SHA, "skipped", URL)
+    assert world.writes == []
 
 
-# failures --------------------------------------------------------------------------------------------------------
+def test_the_same_run_started_again_after_its_own_failure_is_claimed_again_and_finishes_again() -> None:
+    world = World()
+    run_report(world, entry("start"))
+    finish(world, REPO, SHA, "failure", URL)
+    assert run_report(world, entry("start")).start
+    finish(world, REPO, SHA, "success", URL)
+    assert world.newest()["state"] == "success" and len(world.writes) == 4
 
 
 def test_a_refused_write_is_an_error_not_a_silent_answer() -> None:
@@ -403,103 +396,73 @@ def test_a_refused_write_is_an_error_not_a_silent_answer() -> None:
         run_report(world, entry("start"))
 
 
-def test_an_unexpected_answer_about_a_run_is_an_error_and_never_cancels_a_live_run() -> None:
-    class Broken(World):
-        def request(self, method: str, path: str, **kw: Any) -> Response:  # type: ignore[no-untyped-def]
-            if "/actions/runs/" in path:
-                return Response(500, {})
-            return super().request(method, path, **kw)
+# liveness ------------------------------------------------------------------------------------------------------
 
-    world = Broken()
-    check = world.add(external_id=f"run:{OTHER_RUN}")
+
+def test_an_unexpected_answer_about_a_run_is_an_error_and_never_replaces_a_live_run() -> None:
+    world = World()
+    running(world)
+    real = world.request
+
+    def request(method: str, path: str, **kw: Any) -> Response:
+        if "/actions/runs/" in path:
+            return Response(500, {"message": "boom"})
+        return real(method, path, **kw)
+
+    world.request = request  # type: ignore[method-assign]
     with pytest.raises(GitHubError):
         run_report(world, entry("start"))
-    assert check["status"] == "in_progress" and world.writes == []
-
-
-# the pure part ---------------------------------------------------------------------------------------------------
-
-
-def never(_: int) -> bool:
-    raise AssertionError("the answer must not depend on whether a run is alive")
+    assert world.writes == []
 
 
 def test_the_liveness_of_a_run_is_only_asked_when_the_answer_depends_on_it() -> None:
-    waiting = Existing(1, "in_progress", "", "waiting", "", "")
-    done = Existing(1, "completed", "success", f"run:{OTHER_RUN}", "", "")
-    assert plan(entry("start"), waiting, RUN, never).start
-    assert plan(entry("start"), None, RUN, never).start
-    assert not plan(entry("start"), done, RUN, never).start
-    assert not plan(entry("wait-approval"), done, RUN, never).start
+    asked: list[int] = []
+
+    def alive(run: int) -> bool:
+        asked.append(run)
+        return True
+
+    plan(entry("start"), None, RUN, alive)
+    plan(entry("start"), Existing("pending", "Waiting", "waiting"), RUN, alive)
+    plan(entry("start"), Existing("success", "Passed", f"run:{OTHER_RUN}"), RUN, alive)
+    plan(entry("start"), Existing("pending", "Running", f"run:{RUN}"), RUN, alive)
+    assert asked == []
+    plan(entry("start"), Existing("pending", "Running", f"run:{OTHER_RUN}"), RUN, alive)
+    assert asked == [OTHER_RUN]
 
 
-def test_plan_returns_writes_in_the_order_they_have_to_happen() -> None:
-    dead = Existing(9, "in_progress", "", f"run:{OTHER_RUN}", "", "")
-    outcome = plan(entry("start"), dead, RUN, lambda _: False)
-    assert isinstance(outcome, Outcome) and [w.patch_id for w in outcome.writes] == [9, None]
-    first, second = outcome.writes
-    assert isinstance(first, Write) and first.conclusion == "cancelled" and second.status == "in_progress"
+def test_plan_replaces_a_dead_claim_with_one_write() -> None:
+    outcome = plan(entry("start"), Existing("pending", "Running", f"run:{OTHER_RUN}"), RUN, lambda _: False)
+    assert outcome.start and outcome.writes == (Write("pending", "Running: vmaas, caas"),)
 
 
-def test_a_run_id_that_is_not_a_number_is_treated_as_a_run_that_cannot_be_alive() -> None:
-    odd = Existing(9, "in_progress", "", "run:abc", "", "")
-    assert odd.run_id is None
-    assert plan(entry("start"), odd, RUN, never).start is True
+# the commit id -------------------------------------------------------------------------------------------------
 
 
-# commit ids ------------------------------------------------------------------------------------------------------
-
-
-BAD_SHAS = ["", "abc", "A" * 40, "a" * 39, "a" * 41, "a" * 40 + "\n", "../" + "a" * 37, "a" * 39 + "/"]
-
-
-@pytest.mark.parametrize("sha", BAD_SHAS)
+@pytest.mark.parametrize("sha", ["", "abc", "A" * 40, "a" * 40 + "\n", "../x" + "a" * 37, "a" * 41])
 def test_a_commit_id_that_is_not_40_lower_case_hex_digits_is_refused_before_any_request(sha: str) -> None:
     world = World()
     with pytest.raises(ValueError, match="invalid commit id"):
         latest_check(world, REPO, sha)
     with pytest.raises(ValueError, match="invalid commit id"):
-        finish(world, REPO, sha, 1, "success", RUN, URL)
+        finish(world, REPO, sha, "success", URL)
     with pytest.raises(ValueError, match="invalid commit id"):
-        report(world, REPO, [{**entry("start"), "head_sha": sha}], RUN, URL)
+        report(world, REPO, [entry("start", head_sha=sha)], RUN, URL)
     assert world.writes == []
 
 
-# two runs claiming the same commit -------------------------------------------------------------------------------
+# a second run claiming the same commit -------------------------------------------------------------------------
 
 
-class Races(World):
-    """Another run's claim lands right after this run writes its own: both had read 'no claim yet'."""
-
-    def request(self, method: str, path: str, **kw: Any) -> Response:  # type: ignore[no-untyped-def]
-        response = super().request(method, path, **kw)
-        body = kw.get("body")
-        if method in ("POST", "PATCH") and isinstance(body, dict) and body.get("external_id") == f"run:{RUN}":
-            if method == "PATCH":  # the waiting check is taken over by the other run
-                next(c for c in self.checks if c["id"] == int(path.rsplit("/", 1)[1]))["external_id"] = (
-                    f"run:{OTHER_RUN}"
-                )
-            else:
-                self.add(external_id=f"run:{OTHER_RUN}")
-        return response
-
-
-def test_a_claim_that_another_run_overtook_does_not_start_the_suites_when_a_new_check_was_written() -> None:
-    world = Races()
+def test_a_claim_that_another_run_overtook_does_not_start_the_suites() -> None:
+    world = World(runs={OTHER_RUN: "in_progress"})
+    world.after_write = lambda w: running(w)  # another run claims it right after this run wrote
     found = run_report(world, entry("start"))
     assert (found.state, found.start) == ("already-running", False)
-    assert "run 400 claimed the E2E for this commit first" in found.note
-    assert found.check_id == world.checks[-1]["id"]
+    assert f"run {OTHER_RUN}" in found.note
 
 
-def test_a_claim_that_another_run_overtook_does_not_start_the_suites_when_the_waiting_check_was_taken() -> None:
-    world = Races()
-    waiting = world.add(external_id="waiting")
-    found = run_report(world, entry("start"))
-    assert (found.state, found.start) == ("already-running", False) and found.check_id == waiting["id"]
-
-
-def test_a_claim_nobody_overtook_starts_and_reports_the_check_it_re_read() -> None:
+def test_a_claim_nobody_overtook_starts() -> None:
     world = World()
     found = run_report(world, entry("start"))
-    assert found.start and found.check_id == world.checks[-1]["id"]
+    assert found.start and latest_check(world, REPO, SHA) == Existing("pending", "Running: vmaas, caas", f"run:{RUN}")

@@ -40,16 +40,15 @@ def test_nothing_is_expanded_into_a_script_and_nothing_is_checked_out(path: Path
 
 def test_the_declared_outputs_are_the_ones_the_report_step_writes() -> None:
     declared = load(REPORT)["outputs"]
-    assert set(declared) == {"start", "check-id", "sha", "state", "suites", "number"}
+    assert set(declared) == {"start", "sha", "state", "suites", "number"}
     for name in declared:
         assert declared[name]["value"] == f"${{{{ steps.report.outputs.{name} }}}}"
 
 
 def test_the_run_defaults_point_at_the_running_workflow() -> None:
     for path in (REPORT, FINISH):
-        inputs = load(path)["inputs"]
-        assert inputs["run-id"]["default"] == "${{ github.run_id }}"
-        assert inputs["run-url"]["default"].endswith("/actions/runs/${{ github.run_id }}")
+        assert load(path)["inputs"]["run-url"]["default"].endswith("/actions/runs/${{ github.run_id }}")
+    assert load(REPORT)["inputs"]["run-id"]["default"] == "${{ github.run_id }}"
 
 
 def stand_in(tmp_path: Path, answer: dict | None, uv_exit: int = 0) -> dict:
@@ -87,7 +86,7 @@ def outputs(text: str) -> dict[str, str]:
     return dict(line.split("=", 1) for line in text.splitlines() if "=" in line)
 
 
-ANSWER = {"sha": SHA, "number": 9, "state": "running", "start": True, "check_id": 77, "suites": ["vmaas", "caas"]}
+ANSWER = {"sha": SHA, "number": 9, "state": "running", "start": True, "suites": ["vmaas", "caas"]}
 
 
 def test_the_decision_file_and_the_run_are_passed_to_the_program(tmp_path: Path) -> None:
@@ -96,7 +95,7 @@ def test_the_decision_file_and_the_run_are_passed_to_the_program(tmp_path: Path)
     assert f"e2e-report --repo o/r --decision-file {tmp_path}/d.json --run-id 42 --run-url=https://x/run/42" in args
     assert "check text" in summary
     got = outputs(output)
-    assert got["start"] == "true" and got["check-id"] == "77" and got["sha"] == SHA and got["number"] == "9"
+    assert got["start"] == "true" and got["sha"] == SHA and got["number"] == "9"
     assert got["state"] == "running" and json.loads(got["suites"]) == ["vmaas", "caas"]
 
 
@@ -106,11 +105,11 @@ def test_a_run_that_may_not_start_the_suites_says_false_as_a_string(tmp_path: Pa
     assert outputs(output)["start"] == "false"
 
 
-def test_an_answer_with_no_check_leaves_the_check_id_empty(tmp_path: Path) -> None:
-    answer = {**ANSWER, "state": "ignored", "start": False, "check_id": None, "number": None, "sha": ""}
+def test_an_answer_with_no_pull_request_leaves_the_number_and_commit_empty(tmp_path: Path) -> None:
+    answer = {**ANSWER, "state": "ignored", "start": False, "number": None, "sha": ""}
     _, _, output, _, _ = run_report(tmp_path, answer=answer)
     got = outputs(output)
-    assert got["check-id"] == "" and got["number"] == ""
+    assert got["sha"] == "" and got["number"] == ""
 
 
 @pytest.mark.parametrize("decision", [None, "", "missing.json"])
@@ -142,8 +141,8 @@ def test_a_failing_program_fails_the_step_and_never_reports_a_start(tmp_path: Pa
 def run_finish(tmp_path: Path, **over: str):  # type: ignore[no-untyped-def]
     summary = tmp_path / "summary"
     env = {
-        **stand_in(tmp_path, None), "GH_TOKEN": "t", "REPO": "o/r", "SHA": SHA, "CHECK_ID": "77", "RESULT": "success",
-        "DETAIL": "", "RUN_ID": "42", "RUN_URL": "https://x/run/42", "ACTION_PATH": "/a/b/c",
+        **stand_in(tmp_path, None), "GH_TOKEN": "t", "REPO": "o/r", "SHA": SHA, "RESULT": "success",
+        "DETAIL": "", "RUN_URL": "https://x/run/42", "ACTION_PATH": "/a/b/c",
         "GITHUB_STEP_SUMMARY": str(summary),
     }  # fmt: skip
     env.update(over)
@@ -154,22 +153,21 @@ def run_finish(tmp_path: Path, **over: str):  # type: ignore[no-untyped-def]
     return done.returncode, args, done.stdout + done.stderr
 
 
-def test_finish_passes_the_result_and_the_claimed_check_to_the_program(tmp_path: Path) -> None:
+def test_finish_passes_the_result_and_the_run_link_to_the_program(tmp_path: Path) -> None:
     code, args, _ = run_finish(tmp_path, RESULT="failure", DETAIL="caas failed")
     assert code == 0
-    assert f"e2e-finish --repo o/r --sha {SHA} --result failure --run-id 42 --run-url=https://x/run/42" in args
-    assert "--check-id 77" in args and "--detail=caas failed" in args
+    assert f"e2e-finish --repo o/r --sha {SHA} --result failure --run-url=https://x/run/42" in args
+    assert "--detail=caas failed" in args
 
 
-def test_finish_without_a_check_id_or_detail_leaves_them_out(tmp_path: Path) -> None:
-    _, args, _ = run_finish(tmp_path, CHECK_ID="", DETAIL="")
-    assert "--check-id" not in args and "--detail" not in args
+def test_finish_without_a_detail_leaves_it_out(tmp_path: Path) -> None:
+    _, args, _ = run_finish(tmp_path, DETAIL="")
+    assert "--detail" not in args
 
 
 @pytest.mark.parametrize(
     ("name", "value"),
-    [("RESULT", "skipped"), ("RESULT", ""), ("SHA", "abc"), ("SHA", "A" * 40), ("SHA", ""), ("CHECK_ID", "7a"),
-     ("RUN_ID", ""), ("RUN_ID", "$(id)")],
+    [("RESULT", "skipped"), ("RESULT", ""), ("SHA", "abc"), ("SHA", "A" * 40), ("SHA", "")],
 )  # fmt: skip
 def test_finish_refuses_a_value_that_is_not_what_it_should_be_before_the_program_runs(
     tmp_path: Path, name: str, value: str

@@ -1,5 +1,5 @@
-"""The E2E / <Suite> checks: created when the suites are about to start, kept current while the jobs wait for a
-runner and run, completed with each suite's result. Kept by a small in-memory GitHub: the check runs of one commit and
+"""The E2E / <Suite> statuses: written when the suites are about to start, kept current while the jobs wait for a
+runner and run, completed with each suite's result. Kept by a small in-memory GitHub: the statuses of one commit and
 the jobs of one workflow run."""
 
 from __future__ import annotations
@@ -16,64 +16,44 @@ from typing import Any
 import pytest
 import yaml
 from helpers import ROOT
+from test_e2e_check import BASE, RUN, SHA, World
 
 from osac_ci import cli
-from osac_ci.e2e_suites_check import check_name, parse_results, settle, track
+from osac_ci.e2e_suites_check import context, parse_results, settle, track
 from osac_ci.github.api import Response
 
 pytestmark = pytest.mark.unit
 REPO = "o/r"
-SHA = "a" * 40
-RUN = 500
-RUN_URL = "https://example.invalid/run/500"
-BASE = f"/repos/{REPO}"
+RUN_URL = "https://example.invalid/o/r/actions/runs/500"
+NEWER_RUN_URL = "https://example.invalid/o/r/actions/runs/501/job/9"
 
 
-class World:
+class SuiteWorld(World):
     def __init__(self) -> None:
-        self.checks: list[dict[str, Any]] = []
+        super().__init__()
         self.jobs: list[dict[str, Any]] = []
-        self.writes: list[tuple[str, dict[str, Any]]] = []
-        self.next_id = 100
 
     def job(self, name: str, status: str) -> None:
         self.jobs = [j for j in self.jobs if j["name"] != name]
-        self.jobs.append({"name": name, "status": status, "html_url": f"https://example.invalid/job/{name.split()[0]}"})
-
-    def add_check(self, name: str, app: str = "github-actions", run: int = RUN) -> dict[str, Any]:
-        check = {
-            "id": self.next_id, "name": name, "app": {"slug": app}, "status": "in_progress", "output": {},
-            "external_id": f"run:{run}",
-        }  # fmt: skip
-        self.next_id += 1
-        self.checks.append(check)
-        return check
+        self.jobs.append(
+            {
+                "name": name,
+                "status": status,
+                "html_url": f"https://example.invalid/o/r/actions/runs/500/job/{name.split()[0]}",
+            }
+        )
 
     def request(self, method: str, path: str, *, params: Mapping[str, str] | None = None, body: Any = None) -> Response:
-        page, per = int((params or {}).get("page", 1)), int((params or {}).get("per_page", 100))
         if method == "GET" and path == f"{BASE}/actions/runs/{RUN}/jobs":
+            page, per = int((params or {}).get("page", 1)), int((params or {}).get("per_page", 100))
             return Response(200, {"jobs": self.jobs[(page - 1) * per : page * per]})
-        if method == "GET" and path == f"{BASE}/commits/{SHA}/check-runs":
-            return Response(200, {"check_runs": self.checks[(page - 1) * per : page * per]})
-        if method == "POST" and path == f"{BASE}/check-runs":
-            self.writes.append(("POST", body))
-            check = self.add_check(body["name"])
-            check.update(status=body["status"], conclusion=body.get("conclusion"), output=body["output"])
-            check["details_url"], check["external_id"] = body.get("details_url"), body.get("external_id")
-            return Response(201, {"id": check["id"]})
-        if method == "PATCH" and (m := re.fullmatch(rf"{BASE}/check-runs/(\d+)", path)):
-            self.writes.append(("PATCH", body))
-            check = next(c for c in self.checks if c["id"] == int(m.group(1)))
-            check.update(status=body["status"], conclusion=body.get("conclusion"), output=body["output"])
-            check["details_url"] = body.get("details_url")
-            return Response(200, {"id": check["id"]})
-        return Response(404, {"message": f"no route for {method} {path}"})
+        return super().request(method, path, params=params, body=body)
 
-    def by_name(self, name: str) -> dict[str, Any]:
-        return next(c for c in reversed(self.checks) if c["name"] == name)
+    def suite(self, name: str) -> dict[str, Any]:
+        return self.newest(f"E2E / {name}")
 
 
-def fast(world: World, suites: list[str], **kw: Any) -> dict[str, int]:
+def fast(world: SuiteWorld, suites: list[str], **kw: Any) -> list[str]:
     # a clock that moves one second per look, and no real sleeping
     ticks = iter(range(10_000))
     return track(
@@ -82,31 +62,33 @@ def fast(world: World, suites: list[str], **kw: Any) -> dict[str, int]:
     )  # fmt: skip
 
 
-def test_check_names_are_the_suite_labels_and_unknown_suites_are_refused() -> None:
-    assert check_name("vmaas") == "E2E / VMaaS" and check_name("bmaas") == "E2E / BMaaS"
+def test_contexts_are_the_suite_labels_and_unknown_suites_are_refused() -> None:
+    assert context("vmaas") == "E2E / VMaaS" and context("bmaas") == "E2E / BMaaS"
     with pytest.raises(ValueError, match="unknown suite"):
-        check_name("netris")
+        context("netris")
 
 
 def test_a_suite_without_a_job_yet_is_waiting_and_links_the_workflow_run() -> None:
-    world = World()
+    world = SuiteWorld()
     fast(world, ["vmaas"], timeout=0)
-    check = world.by_name("E2E / VMaaS")
-    assert check["output"]["title"] == "Waiting for a runner"
-    assert check["output"]["summary"].endswith(f"[Open the workflow run]({RUN_URL})")
+    status = world.suite("VMaaS")
+    assert (status["state"], status["description"], status["target_url"]) == (
+        "pending",
+        "Waiting for a runner",
+        RUN_URL,
+    )
 
 
-def test_a_queued_job_is_waiting_for_a_runner_and_links_the_job() -> None:
-    world = World()
+def test_a_queued_job_is_waiting_for_a_runner_and_links_the_job_logs() -> None:
+    world = SuiteWorld()
     world.job("VMaaS / e2e-vmaas-full-install / e2e", "queued")
     fast(world, ["vmaas"], timeout=0)
-    check = world.by_name("E2E / VMaaS")
-    assert check["output"]["title"] == "Waiting for a runner"
-    assert check["output"]["summary"].endswith("[Open the job logs](https://example.invalid/job/VMaaS)")
+    status = world.suite("VMaaS")
+    assert status["description"] == "Waiting for a runner" and status["target_url"].endswith("/job/VMaaS")
 
 
-def test_the_check_turns_to_running_when_the_job_gets_a_runner_and_the_tracking_ends() -> None:
-    world = World()
+def test_the_status_turns_to_running_when_the_job_gets_a_runner_and_the_tracking_ends() -> None:
+    world = SuiteWorld()
     world.job("VMaaS / e2e-vmaas-full-install / e2e", "queued")
     world.job("CaaS / e2e-caas-full-install / e2e", "in_progress")
     looks = {"n": 0}
@@ -120,90 +102,82 @@ def test_the_check_turns_to_running_when_the_job_gets_a_runner_and_the_tracking_
         return real(method, path, **kw)
 
     world.request = request  # type: ignore[method-assign]
-    ids = fast(world, ["vmaas", "caas"])
-    assert world.by_name("E2E / VMaaS")["output"]["title"] == "Running"
-    assert world.by_name("E2E / CaaS")["output"]["title"] == "Running"
-    assert ids == {"vmaas": world.by_name("E2E / VMaaS")["id"], "caas": world.by_name("E2E / CaaS")["id"]}
-    # one check per suite: the second look updated the VMaaS check in place and left the CaaS one alone
-    assert len(world.checks) == 2 and [m for m, _ in world.writes].count("PATCH") == 1
+    wrote = fast(world, ["vmaas", "caas"])
+    assert world.suite("VMaaS")["description"] == "Running" and world.suite("CaaS")["description"] == "Running"
+    assert wrote == ["vmaas", "caas"]
+    # the CaaS status was written once, VMaaS twice (waiting, then running)
+    contexts = [w["context"] for w in world.writes]
+    assert contexts.count("E2E / CaaS") == 1 and contexts.count("E2E / VMaaS") == 2
 
 
 def test_nothing_is_written_again_when_nothing_changed() -> None:
-    world = World()
+    world = SuiteWorld()
     world.job("VMaaS / e2e-vmaas-full-install / e2e", "queued")
     fast(world, ["vmaas"], timeout=5)  # several looks, the job never leaves the queue
     assert len(world.writes) == 1
 
 
 def test_a_job_that_only_starts_with_the_suite_label_is_not_the_suite_job() -> None:
-    world = World()
+    world = SuiteWorld()
     world.job("VMaaS notes", "in_progress")
     fast(world, ["vmaas"], timeout=0)
-    check = world.by_name("E2E / VMaaS")
-    assert check["output"]["title"] == "Waiting for a runner" and "job/" not in check["output"]["summary"]
+    status = world.suite("VMaaS")
+    assert status["description"] == "Waiting for a runner" and "/job/" not in status["target_url"]
 
 
-def test_tracked_checks_are_in_progress_until_settled() -> None:
-    world = World()
+def test_tracked_statuses_are_pending_until_settled() -> None:
+    world = SuiteWorld()
     world.job("CaaS / e2e-caas-full-install / e2e", "in_progress")
     fast(world, ["caas"])
-    check = world.by_name("E2E / CaaS")
-    assert check["status"] == "in_progress" and check.get("conclusion") is None
+    assert world.suite("CaaS")["state"] == "pending"
 
 
-def test_a_suite_that_does_not_run_gets_no_check() -> None:
-    world = World()
+def test_a_suite_that_does_not_run_gets_no_status() -> None:
+    world = SuiteWorld()
     world.job("VMaaS / e2e-vmaas-full-install / e2e", "in_progress")
     fast(world, ["vmaas"])
-    assert [c["name"] for c in world.checks] == ["E2E / VMaaS"]
+    assert {s["context"] for s in world.statuses} == {"E2E / VMaaS"}
 
 
-def test_settle_completes_the_check_with_the_result_and_the_job_link() -> None:
-    world = World()
+def test_settle_writes_the_result_with_a_link_to_the_job_logs() -> None:
+    world = SuiteWorld()
     world.job("VMaaS / e2e-vmaas-full-install / e2e", "in_progress")
     world.job("CaaS / e2e-caas-full-install / e2e", "in_progress")
     fast(world, ["vmaas", "caas"])
-    settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success", "caas": "failure"})
-    ok, bad = world.by_name("E2E / VMaaS"), world.by_name("E2E / CaaS")
-    assert (ok["status"], ok["conclusion"], ok["output"]["title"]) == ("completed", "success", "Passed")
-    assert (bad["status"], bad["conclusion"], bad["output"]["title"]) == ("completed", "failure", "Failed")
-    assert bad["output"]["summary"].endswith("[Open the job logs](https://example.invalid/job/CaaS)")
-    assert len(world.checks) == 2
+    wrote = settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success", "caas": "failure"})
+    assert wrote == ["vmaas", "caas"]
+    assert (world.suite("VMaaS")["state"], world.suite("VMaaS")["description"]) == ("success", "Passed")
+    assert (world.suite("CaaS")["state"], world.suite("CaaS")["description"]) == ("failure", "Failed")
+    assert world.suite("CaaS")["target_url"].endswith("/job/CaaS")
 
 
-def test_settle_without_a_check_creates_a_completed_one() -> None:
-    world = World()
+def test_settle_without_a_status_writes_one_that_links_the_workflow_run() -> None:
+    world = SuiteWorld()
     settle(world, REPO, SHA, RUN, RUN_URL, {"bmaas": "cancelled"})
-    check = world.by_name("E2E / BMaaS")
-    assert (check["status"], check["conclusion"], check["output"]["title"]) == ("completed", "cancelled", "Cancelled")
-    assert check["output"]["summary"].endswith(f"[Open the workflow run]({RUN_URL})")
+    status = world.suite("BMaaS")
+    assert (status["state"], status["description"], status["target_url"]) == ("error", "Cancelled", RUN_URL)
 
 
-def test_settle_updates_the_newest_check_of_the_app_not_another_apps() -> None:
-    world = World()
-    older = world.add_check("E2E / VMaaS")
-    newer = world.add_check("E2E / VMaaS")
-    foreign = world.add_check("E2E / VMaaS", app="some-other-app")
-    settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"})
-    assert newer["status"] == "completed" and older["status"] == "in_progress" and foreign["status"] == "in_progress"
+def test_settle_never_overwrites_the_status_of_a_newer_run() -> None:
+    world = SuiteWorld()
+    world.add(context="E2E / VMaaS", state="pending", description="Running", target_url=NEWER_RUN_URL)
+    wrote = settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "failure", "caas": "success"})
+    assert wrote == ["caas"] and world.suite("VMaaS")["description"] == "Running"
 
 
-def test_settle_never_completes_the_check_of_another_workflow_run() -> None:
-    world = World()
-    other = world.add_check("E2E / VMaaS", run=RUN + 1)  # the newest check of the name, but another run's
-    mine = world.add_check("E2E / VMaaS")
-    world.add_check("E2E / VMaaS", run=RUN + 1)
-    settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "failure"})
-    assert mine["conclusion"] == "failure" and other["status"] == "in_progress"
-    assert all(c["status"] == "in_progress" for c in world.checks if c["external_id"] == f"run:{RUN + 1}")
+def test_settle_replaces_the_status_its_own_run_wrote() -> None:
+    world = SuiteWorld()
+    world.add(context="E2E / VMaaS", state="pending", description="Running", target_url=RUN_URL + "/job/1")
+    assert settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"}) == ["vmaas"]
+    assert world.suite("VMaaS")["state"] == "success"
 
 
-def test_settle_creates_its_own_check_when_only_another_runs_check_exists() -> None:
-    world = World()
-    other = world.add_check("E2E / VMaaS", run=RUN + 1)
-    settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"})
-    assert other["status"] == "in_progress" and len(world.checks) == 2
-    assert world.checks[-1]["external_id"] == f"run:{RUN}" and world.checks[-1]["conclusion"] == "success"
+def test_settle_ignores_a_status_a_person_wrote_for_the_decision() -> None:
+    world = SuiteWorld()
+    world.add(
+        context="E2E / VMaaS", state="pending", description="x", target_url=NEWER_RUN_URL, creator={"login": "me"}
+    )
+    assert settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"}) == ["vmaas"]
 
 
 @pytest.mark.parametrize(
@@ -211,7 +185,7 @@ def test_settle_creates_its_own_check_when_only_another_runs_check_exists() -> N
     [({"netris": "success"}, "unknown suite"), ({"vmaas": "skipped"}, "must be one of")],
 )
 def test_settle_refuses_unknown_suites_and_results_before_writing(results: dict[str, str], message: str) -> None:
-    world = World()
+    world = SuiteWorld()
     with pytest.raises(ValueError, match=message):
         settle(world, REPO, SHA, RUN, RUN_URL, {"caas": "success", **results})
     assert world.writes == []
@@ -220,9 +194,9 @@ def test_settle_refuses_unknown_suites_and_results_before_writing(results: dict[
 @pytest.mark.parametrize("sha", ["", "abc", "A" * 40, "a" * 40 + "\n"])
 def test_a_commit_id_that_is_not_a_full_lower_case_sha_is_refused(sha: str) -> None:
     with pytest.raises(ValueError, match="invalid commit id"):
-        settle(World(), REPO, sha, RUN, RUN_URL, {"vmaas": "success"})
+        settle(SuiteWorld(), REPO, sha, RUN, RUN_URL, {"vmaas": "success"})
     with pytest.raises(ValueError, match="invalid commit id"):
-        track(World(), REPO, sha, RUN, RUN_URL, ["vmaas"], timeout=0)
+        track(SuiteWorld(), REPO, sha, RUN, RUN_URL, ["vmaas"], timeout=0)
 
 
 def test_parse_results() -> None:
@@ -233,22 +207,22 @@ def test_parse_results() -> None:
         parse_results(["vmaas=failure", "vmaas=success"])
 
 
-def test_the_settle_command_prints_the_check_ids_and_a_bad_result_exits_3(
+def test_the_settle_command_prints_the_suites_it_wrote_and_a_bad_result_exits_3(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    world = World()
+    world = SuiteWorld()
     monkeypatch.setattr(cli, "build_client", lambda **_: world)
     base = ["e2e-suites-settle", "--repo", REPO, "--sha", SHA, "--run-id", str(RUN)]
     assert cli.main([*base, "--result", "vmaas=success"]) == 0
-    assert json.loads(capsys.readouterr().out) == {"vmaas": world.by_name("E2E / VMaaS")["id"]}
+    assert json.loads(capsys.readouterr().out) == ["vmaas"]
     assert cli.main([*base, "--result", "vmaas=bogus"]) == 3
     assert "e2e-suites-settle failed" in capsys.readouterr().err
 
 
-def test_the_track_command_creates_the_checks(
+def test_the_track_command_writes_the_statuses(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
-    world = World()
+    world = SuiteWorld()
     world.job("CaaS / e2e-caas-full-install / e2e", "in_progress")
     monkeypatch.setattr(cli, "build_client", lambda **_: world)
     argv = [
@@ -265,7 +239,7 @@ def test_the_track_command_creates_the_checks(
         "0",
     ]
     assert cli.main(argv) == 0
-    assert json.loads(capsys.readouterr().out) == {"caas": world.by_name("E2E / CaaS")["id"]}
+    assert json.loads(capsys.readouterr().out) == ["caas"]
 
 
 # the two actions ------------------------------------------------------------------------------------------------

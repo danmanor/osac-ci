@@ -1,27 +1,31 @@
-"""E2E check: the one required check named ``E2E``, kept by a single workflow from the first push to the result.
+"""E2E status: the one required ``E2E`` status of a pull request, kept by a single workflow from the first push to the
+result.
 
 The full-install E2E starts from a workflow that runs on the default branch, after the pull request is approved on its
 latest commit and CI has passed. Its jobs are therefore not on the pull request, and a required check that has not
-reported blocks the merge without saying why. This module gives the pull request ONE check run named ``E2E`` and keeps
-it up to date: what the E2E is waiting for, then that it is running, then how it ended (or that the change does not
-affect any suite). Check runs of the same name on a commit are judged by the newest one, so an older one that was left
-behind never blocks a newer result.
+reported blocks the merge without saying why. This module keeps ONE commit status named ``E2E`` on the pull request's
+head commit: what the E2E is waiting for, then that it is running, then how it ended (or that the change does not affect
+any suite). A commit status, not a check run: the pull request page lists statuses, but not check runs that a workflow
+writes through the API (they hang on an unrelated workflow's check group and are not drawn). The newest status of a
+context counts, so a status that was left behind never blocks a newer result, and nothing has to be patched.
 
 Two operations, both driven by the answer of ``e2e-decide`` (``e2e_start``):
 
 * ``report`` shows what the answer means and, for ``start`` only, claims the E2E for this workflow run: it answers
   ``start=true`` when this run may start the suites. A commit gets its E2E once: a run that is alive, or a result that
-  is already there, means no second start. A run that died without leaving a result is cancelled in the check and the
-  E2E starts again. A second attempt of the SAME workflow run (the Actions page "re-run") starts again.
-* ``finish`` records the result of the suites on the check the report claimed.
+  is already there, means no second start. A run that died without leaving a result is replaced and the E2E starts
+  again. A second attempt of the SAME workflow run (the Actions page "re-run") starts again.
+* ``finish`` records the result of the suites.
 
-Only check runs of the GitHub Actions app named ``E2E`` are ever read or changed. ``plan`` decides and does no I/O;
-``report`` and ``finish`` read and write through the client.
+The workflow run that owns a status is read from its link (``.../actions/runs/<id>``). Only statuses created by the
+GitHub Actions bot are read. ``plan`` decides and does no I/O; ``report`` and ``finish`` read and write through the
+client.
 """
 
 from __future__ import annotations
 
 import json
+import re
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from enum import StrEnum
@@ -30,17 +34,17 @@ from typing import Any
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 from osac_ci.github.snapshot import COMMIT_SHA
 
-CHECK_NAME = "E2E"
-APP_SLUG = "github-actions"  # the app that owns the check runs of a workflow's built-in token
-WAITING_ID = "waiting"  # external id of a check run that waits
+CONTEXT = "E2E"
+CREATOR = "github-actions[bot]"  # who a workflow's built-in token writes statuses as
+DESCRIPTION_MAX = 140  # what GitHub keeps of a status description
+WAITING_ID = "waiting"  # external id of a status that waits
 NOT_AFFECTED_ID = "not-affected"
-RUN_PREFIX = "run:"  # external id of a check run that belongs to a workflow run: "run:<run id>"
+RUN_PREFIX = "run:"  # external id of a status that belongs to a workflow run: "run:<run id>"
+RUNNING_PREFIX = "Running"  # a pending status that starts like this is the claim of a run
+NOT_AFFECTED_TITLE = "Not affected by this change"
 RESULTS = ("success", "failure", "cancelled")
-
-HOW_IT_STARTS = (
-    "The full-install E2E starts by itself once the pull request is approved on its latest commit by someone with "
-    "write access (or CodeRabbit), CI has passed, and the change affects an E2E suite. A new commit starts over."
-)
+STATES = ("pending", "success", "failure", "error")  # what GitHub accepts for a status
+RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 
 WAITING_TITLES = {
     "skip-draft": "Waiting: the pull request is a draft",
@@ -59,39 +63,32 @@ class Phase(StrEnum):
 
 @dataclass(frozen=True)
 class Existing:
-    """The newest ``E2E`` check run of the GitHub Actions app on a commit."""
+    """The newest ``E2E`` status of the GitHub Actions bot on a commit."""
 
-    id: int
-    status: str  # queued | in_progress | completed
-    conclusion: str  # "" until completed
-    external_id: str
-    title: str
-    summary: str
+    state: str  # pending | success | failure | error
+    description: str
+    external_id: str  # waiting | not-affected | run:<id> | "" (see ``existing_from``)
 
     @property
     def phase(self) -> Phase:
-        if self.status == "completed":
+        if self.state != "pending":
             return Phase.DONE
         return Phase.RUNNING if self.external_id.startswith(RUN_PREFIX) else Phase.WAITING
 
     @property
     def run_id(self) -> int | None:
-        """The workflow run that owns this check run, when it names one."""
+        """The workflow run that owns this status, when it names one."""
         tail = self.external_id[len(RUN_PREFIX) :] if self.external_id.startswith(RUN_PREFIX) else ""
         return int(tail) if tail.isdigit() else None
 
 
 @dataclass(frozen=True)
 class Write:
-    """One change to the check runs: create a new one (``patch_id`` None) or update an existing one."""
+    """One status to write. ``link`` points it at the workflow run that is writing it."""
 
-    patch_id: int | None
-    status: str  # in_progress | completed
-    conclusion: str | None
-    title: str
-    summary: str
-    external_id: str
-    link: bool = False  # point the check at the workflow run
+    state: str  # pending | success | failure | error
+    description: str
+    link: bool = True
 
 
 @dataclass(frozen=True)
@@ -99,7 +96,6 @@ class Outcome:
     state: str  # waiting | running | not-affected | already-running | already-ran | ignored
     start: bool
     writes: tuple[Write, ...] = ()
-    check_id: int | None = None  # the check run the answer is about when nothing has to be written for it
     note: str = ""
 
 
@@ -109,9 +105,14 @@ class Report:
     number: int | None
     state: str
     start: bool
-    check_id: int | None
     suites: tuple[str, ...]
     note: str
+
+
+def describe(text: str) -> str:
+    """A status description is one line of at most 140 characters; a longer one is cut with an ellipsis."""
+    one = " ".join(text.split())
+    return one if len(one) <= DESCRIPTION_MAX else one[: DESCRIPTION_MAX - 1].rstrip() + "…"
 
 
 # deciding -------------------------------------------------------------------------------------------------------
@@ -121,101 +122,62 @@ def _suites(entry: Mapping[str, Any]) -> tuple[str, ...]:
     return tuple(str(s) for s in entry.get("suites") or ())
 
 
-def waiting_text(entry: Mapping[str, Any]) -> tuple[str, str]:
+def waiting_description(entry: Mapping[str, Any]) -> str:
+    """What the E2E waits for, in the 140 characters a status has: the title, then the reason. The decision's whole
+    explanation is in the job summary of the run the status links to."""
     action = str(entry.get("action", ""))
     title = WAITING_TITLES.get(action, f"Waiting: {action}")
-    lines = [str(entry.get("reason", "")), ""]
-    if suites := _suites(entry):
-        lines += [f"Suites this change affects: {', '.join(suites)}.", ""]
-    if failed := entry.get("cheap_failed"):
-        lines += [f"Failed: {'; '.join(str(f) for f in failed)}", ""]
-    if pending := entry.get("cheap_pending"):
-        lines += [f"Not finished: {'; '.join(str(p) for p in pending)}", ""]
-    if stale := entry.get("stale_approvals"):
-        lines += [f"Approved an older commit (does not count): {', '.join(str(s) for s in stale)}", ""]
-    lines.append(HOW_IT_STARTS)
-    return title, "\n".join(lines)
+    reason = str(entry.get("reason", "")).strip()
+    return describe(f"{title}: {reason}" if reason else title)
 
 
 def _waiting(entry: Mapping[str, Any], existing: Existing | None, alive: Callable[[int], bool]) -> Outcome:
-    title, summary = waiting_text(entry)
-    fresh = Write(None, "in_progress", None, title, summary, WAITING_ID)
+    write = Write("pending", waiting_description(entry))
     if existing is None:
-        return Outcome("waiting", False, (fresh,))
+        return Outcome("waiting", False, (write,))
     if existing.phase is Phase.WAITING:
-        if (existing.title, existing.summary) == (title, summary):
-            return Outcome("waiting", False, check_id=existing.id)
-        return Outcome("waiting", False, (Write(existing.id, "in_progress", None, title, summary, WAITING_ID),))
+        if existing.description == write.description:
+            return Outcome("waiting", False)
+        return Outcome("waiting", False, (write,))
     if existing.phase is Phase.RUNNING:
         if existing.run_id is not None and alive(existing.run_id):
-            return Outcome("already-running", False, check_id=existing.id, note=f"run {existing.run_id} is running it")
-        return Outcome("waiting", False, (_cancel_dead(existing), fresh))
-    return Outcome("already-ran", False, check_id=existing.id, note="a result is already on this commit")
+            return Outcome("already-running", False, note=f"run {existing.run_id} is running it")
+        return Outcome("waiting", False, (write,))
+    return Outcome("already-ran", False, note="a result is already on this commit")
 
 
-def _cancel_dead(existing: Existing) -> Write:
-    return Write(
-        existing.id,
-        "completed",
-        "cancelled",
-        "Cancelled: the run ended without a result",
-        f"Run {existing.run_id or 'unknown'} stopped before it reported a result.",
-        existing.external_id,
-    )  # no link: the invocation's run is the NEW one, not the run this check names
-
-
-def _claim(entry: Mapping[str, Any], patch_id: int | None, run_id: int) -> Write:
+def _claim(entry: Mapping[str, Any]) -> Write:
     suites = _suites(entry)
-    return Write(
-        patch_id,
-        "in_progress",
-        None,
-        f"Running: {', '.join(suites) or 'the full-install suites'}",
-        f"Approved by {', '.join(entry.get('approvers') or ()) or 'a reviewer'} and CI passed. The suites run in the "
-        "workflow run linked below.",
-        f"{RUN_PREFIX}{run_id}",
-        link=True,
-    )
+    return Write("pending", describe(f"{RUNNING_PREFIX}: {', '.join(suites) or 'the full-install suites'}"))
 
 
 def _start(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive: Callable[[int], bool]) -> Outcome:
-    if existing is None:
-        return Outcome("running", True, (_claim(entry, None, run_id),))
-    if existing.phase is Phase.WAITING:
-        return Outcome("running", True, (_claim(entry, existing.id, run_id),))
+    if existing is None or existing.phase is Phase.WAITING:
+        return Outcome("running", True, (_claim(entry),))
     if existing.phase is Phase.RUNNING:
         if existing.run_id == run_id:
-            return Outcome("running", True, check_id=existing.id, note="this run already claimed it")
+            return Outcome("running", True, note="this run already claimed it")
         if existing.run_id is not None and alive(existing.run_id):
-            return Outcome("already-running", False, check_id=existing.id, note=f"run {existing.run_id} is running it")
-        return Outcome("running", True, (_cancel_dead(existing), _claim(entry, None, run_id)))
+            return Outcome("already-running", False, note=f"run {existing.run_id} is running it")
+        return Outcome("running", True, (_claim(entry),), note=f"run {existing.run_id} ended without a result")
     if existing.run_id == run_id:  # the same workflow run, started again from the Actions page
-        return Outcome("running", True, (_claim(entry, None, run_id),), note="re-run of the same workflow run")
+        return Outcome("running", True, (_claim(entry),), note="re-run of the same workflow run")
     return Outcome(
         "already-ran",
         False,
-        check_id=existing.id,
         note="the E2E already ran on this commit; re-run it from its workflow run, or push a new commit",
     )
 
 
 def _not_affected(existing: Existing | None) -> Outcome:
-    write = Write(
-        existing.id if existing is not None and existing.phase is Phase.WAITING else None,
-        "completed",
-        "success",
-        "Not affected by this change",
-        "No E2E suite is affected by the changed files, so there is nothing to wait for.",
-        NOT_AFFECTED_ID,
-    )
     if existing is not None and existing.phase is not Phase.WAITING:
-        return Outcome("not-affected", False, check_id=existing.id, note="the check already has its answer")
-    return Outcome("not-affected", False, (write,))
+        return Outcome("not-affected", False, note="the status already has its answer")
+    return Outcome("not-affected", False, (Write("success", NOT_AFFECTED_TITLE),))
 
 
 def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive: Callable[[int], bool]) -> Outcome:
-    """What to do for one decision, given the newest ``E2E`` check run on the commit. ``alive`` says whether a
-    workflow run is still going; it is only asked when the answer depends on it."""
+    """What to do for one decision, given the newest ``E2E`` status on the commit. ``alive`` says whether a workflow
+    run is still going; it is only asked when the answer depends on it."""
     action = str(entry.get("action", ""))
     if action == "skip-closed":
         return Outcome("ignored", False, note="the pull request is closed")
@@ -229,7 +191,7 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
 # reading and writing GitHub ---------------------------------------------------------------------------------------
 
 
-def _check_sha(sha: str) -> str:
+def check_sha(sha: str) -> str:
     """A commit id ends up in a URL path and in a request body: only 40 lower-case hex digits, nothing around them (a
     trailing newline would pass ``match``, so the whole string has to match)."""
     if not COMMIT_SHA.fullmatch(sha):
@@ -237,27 +199,41 @@ def _check_sha(sha: str) -> str:
     return sha
 
 
+def run_of_url(url: str) -> int | None:
+    """The workflow run a link points into (a run page or one of its jobs)."""
+    found = RUN_IN_URL.search(url or "")
+    return int(found.group(1)) if found else None
+
+
+def newest_status(client: GitHubClient, repo: str, sha: str, context: str) -> Mapping[str, Any] | None:
+    """The newest status of this context that the GitHub Actions bot wrote on the commit. GitHub lists a commit's
+    statuses newest first."""
+    statuses = paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/statuses")
+    for status in statuses:
+        if status.get("context") == context and (status.get("creator") or {}).get("login") == CREATOR:
+            return status  # type: ignore[no-any-return]
+    return None
+
+
+def existing_from(status: Mapping[str, Any]) -> Existing:
+    """What ``plan`` needs to know about a status, read back from what was written: a pending status that says
+    "Running" is the claim of the run its link names; any other pending one waits; the success that says "not
+    affected" is that answer; any other finished one is the result of the run its link names."""
+    state = str(status.get("state", ""))
+    description = str(status.get("description") or "")
+    run = run_of_url(str(status.get("target_url") or ""))
+    if state == "pending":
+        external = f"{RUN_PREFIX}{run}" if run is not None and description.startswith(RUNNING_PREFIX) else WAITING_ID
+    elif state == "success" and description == NOT_AFFECTED_TITLE:
+        external = NOT_AFFECTED_ID
+    else:
+        external = f"{RUN_PREFIX}{run}" if run is not None else ""
+    return Existing(state, description, external)
+
+
 def latest_check(client: GitHubClient, repo: str, sha: str) -> Existing | None:
-    sha = _check_sha(sha)
-    runs = paginate(
-        client,
-        f"/repos/{check_repo(repo)}/commits/{sha}/check-runs",
-        key="check_runs",
-        params={"check_name": CHECK_NAME, "filter": "all"},
-    )
-    mine = [r for r in runs if r.get("name") == CHECK_NAME and (r.get("app") or {}).get("slug") == APP_SLUG]
-    if not mine:
-        return None
-    newest = max(mine, key=lambda r: int(r["id"]))
-    output = newest.get("output") or {}
-    return Existing(
-        id=int(newest["id"]),
-        status=str(newest.get("status", "")),
-        conclusion=str(newest.get("conclusion") or ""),
-        external_id=str(newest.get("external_id") or ""),
-        title=str(output.get("title") or ""),
-        summary=str(output.get("summary") or ""),
-    )
+    status = newest_status(client, repo, sha, CONTEXT)
+    return existing_from(status) if status is not None else None
 
 
 def run_is_alive(client: GitHubClient, repo: str, run_id: int) -> bool:
@@ -269,35 +245,22 @@ def run_is_alive(client: GitHubClient, repo: str, run_id: int) -> bool:
     return str(response.data.get("status")) != "completed"
 
 
-def write_check(
-    client: GitHubClient,
-    repo: str,
-    sha: str,
-    write: Write,
-    run_url: str,
-    *,
-    name: str = CHECK_NAME,
-    link_label: str = "Open the workflow run",
-) -> int:
-    summary = write.summary
-    body: dict[str, Any] = {"status": write.status, "external_id": write.external_id}
-    if write.conclusion:
-        body["conclusion"] = write.conclusion
-    if write.link and run_url:
-        # GitHub keeps the check's own page as its details link when the Actions token writes it, so the link to the
-        # workflow run goes into the text, where it can be clicked.
-        body["details_url"] = run_url
-        summary = f"{summary}\n\n[{link_label}]({run_url})"
-    body["output"] = {"title": write.title, "summary": summary}
-    base = f"/repos/{check_repo(repo)}/check-runs"
-    if write.patch_id is None:
-        response = client.request("POST", base, body={**body, "name": name, "head_sha": sha})
-    else:
-        response = client.request("PATCH", f"{base}/{write.patch_id}", body=body)
-    if response.status not in (200, 201) or not isinstance(response.data, dict):
+def post_status(
+    client: GitHubClient, repo: str, sha: str, context: str, state: str, description: str, target_url: str = ""
+) -> None:
+    if state not in STATES:
+        raise ValueError(f"state must be one of {', '.join(STATES)}, not {state!r}")
+    body: dict[str, str] = {"state": state, "context": context, "description": describe(description)}
+    if target_url:
+        body["target_url"] = target_url
+    response = client.request("POST", f"/repos/{check_repo(repo)}/statuses/{check_sha(sha)}", body=body)
+    if response.status not in (200, 201):
         message = response.data.get("message", "") if isinstance(response.data, dict) else ""
-        raise GitHubError(response.status, f"writing the {name} check failed: {message}")
-    return int(response.data["id"])
+        raise GitHubError(response.status, f"writing the {context} status failed: {message}")
+
+
+def write_status(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str) -> None:
+    post_status(client, repo, sha, CONTEXT, write.state, write.description, run_url if write.link else "")
 
 
 def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]], run_id: int, run_url: str) -> Report:
@@ -307,53 +270,32 @@ def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]]
         raise ValueError("every decision must be an object")
     if len(entries) != 1:
         note = "no open pull request has this head commit" if not entries else "several pull requests have this head"
-        return Report("", None, "ignored", False, None, (), note)
+        return Report("", None, "ignored", False, (), note)
     entry = entries[0]
     sha = str(entry["head_sha"])
     existing = latest_check(client, repo, sha)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
-    check_id = outcome.check_id
     for write in outcome.writes:
-        check_id = write_check(client, repo, sha, write, run_url)
+        write_status(client, repo, sha, write, run_url)
     number = int(entry["number"])
     if outcome.start:
-        # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest check
+        # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
         # workflow must also run one decision at a time per commit; this look only narrows the window.
         newest = latest_check(client, repo, sha)
         if newest is None or newest.run_id != run_id:
             other = f"run {newest.run_id}" if newest is not None and newest.run_id else "another run"
-            note = f"{other} claimed the E2E for this commit first"
-            return Report(sha, number, "already-running", False, newest.id if newest else None, _suites(entry), note)
-        check_id = newest.id
-    return Report(sha, number, outcome.state, outcome.start, check_id, _suites(entry), outcome.note)
+            return Report(sha, number, "already-running", False, _suites(entry), f"{other} claimed the E2E first")
+    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note)
 
 
-def finish(
-    client: GitHubClient,
-    repo: str,
-    sha: str,
-    check_id: int | None,
-    result: str,
-    run_id: int,
-    run_url: str,
-    detail: str = "",
-) -> int:
-    """Record how the suites ended on the check run the report claimed (a new completed one when there is none)."""
+def finish(client: GitHubClient, repo: str, sha: str, result: str, run_url: str, detail: str = "") -> None:
+    """Record how the suites ended."""
     if result not in RESULTS:
         raise ValueError(f"result must be one of {', '.join(RESULTS)}, not {result!r}")
-    sha = _check_sha(sha)
     title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
-    summary = (
-        detail
-        or {
-            "success": "Every suite that ran passed.",
-            "failure": "A suite failed. Re-run it from the workflow run linked below.",
-            "cancelled": "The run was cancelled before it finished.",
-        }[result]
-    )
-    write = Write(check_id, "completed", result, title, summary, f"{RUN_PREFIX}{run_id}", link=True)
-    return write_check(client, repo, sha, write, run_url)
+    state = {"success": "success", "failure": "failure", "cancelled": "error"}[result]
+    write_status(client, repo, sha, Write(state, f"{title}: {detail}" if detail else title), run_url)
 
 
 # rendering ------------------------------------------------------------------------------------------------------
@@ -361,8 +303,8 @@ def finish(
 
 def render(found: Report) -> str:
     if found.state == "ignored":
-        return f"### E2E check: nothing to do\n\n{found.note}\n"
-    lines = [f"### E2E check: **{found.state}**" + (" (starting the suites)" if found.start else ""), ""]
+        return f"### E2E status: nothing to do\n\n{found.note}\n"
+    lines = [f"### E2E status: **{found.state}**" + (" (starting the suites)" if found.start else ""), ""]
     if found.suites:
         lines.append(f"- suites: {', '.join(found.suites)}")
     lines.append(f"- commit: `{found.sha[:7]}`")
@@ -378,7 +320,6 @@ def to_json(found: Report) -> str:
             "number": found.number,
             "state": found.state,
             "start": found.start,
-            "check_id": found.check_id,
             "suites": list(found.suites),
             "note": found.note,
         },

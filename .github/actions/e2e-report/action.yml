@@ -1,21 +1,21 @@
 ---
 name: Show the E2E decision on the pull request and claim the start
 description: >-
-  Take the answer of e2e-decide and keep the pull request's single check named E2E up to date: what the E2E waits for,
+  Take the answer of e2e-decide and keep the pull request's single status named E2E up to date: what the E2E waits for,
   that the change is not affected, or that this workflow run has claimed the start. Answers start=true only to the one run
-  that may start the suites (a commit gets its E2E once; a run that died is cancelled in the check and replaced). Called
+  that may start the suites (a commit gets its E2E once; a run that died is replaced). Called
   from a workflow of the repository that runs on the default branch, pinned to a commit of osac-ci, like the other
   actions.
 
 # The calling workflow must run one decision at a time per head commit (a concurrency group keyed by the commit, without
 # cancel-in-progress), so two runs never claim the same commit together. It decides when this runs and what token it
-# holds: checks: write (to write the check), actions: read
+# holds: statuses: write (to write the status), actions: read
 # (to ask whether an earlier run is still going) and pull-requests: read. This action never checks out the calling
 # repository, so it cannot run pull request code. Every input reaches the shell through an environment variable, never
 # through the script text.
 inputs:
   github-token:
-    description: Token that can write check runs and read workflow runs (normally the job's built-in token)
+    description: Token that can write commit statuses and read workflow runs (normally the job's built-in token)
     required: true
   repo:
     description: Repository, owner/name
@@ -27,7 +27,7 @@ inputs:
     description: The workflow run that would start the suites
     default: ${{ github.run_id }}
   run-url:
-    description: Link of that run, shown on the check
+    description: Link of that run, shown with the status
     default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
 
 outputs:
@@ -36,9 +36,6 @@ outputs:
       "true" only for the one run that may start the suites now. A string: compare it with 'true' (the string "false" is
       truthy in an expression)
     value: ${{ steps.report.outputs.start }}
-  check-id:
-    description: The check run the answer is about (empty when there is none)
-    value: ${{ steps.report.outputs.check-id }}
   sha:
     description: The head commit the answer is for (empty when nothing was reported)
     value: ${{ steps.report.outputs.sha }}
@@ -79,7 +76,6 @@ runs:
           echo "::notice::There is no decision to report."
           {
             echo "start=false"
-            echo "check-id="
             echo "sha="
             echo "state=ignored"
             echo "suites=[]"
@@ -93,7 +89,6 @@ runs:
           --run-id "$RUN_ID" --run-url="$RUN_URL" --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
         {
           echo "start=$(jq -r '.start' "$json")"
-          echo "check-id=$(jq -r '.check_id // empty' "$json")"
           echo "sha=$(jq -r '.sha' "$json")"
           echo "state=$(jq -r '.state' "$json")"
           echo "suites=$(jq -c '.suites' "$json")"
