@@ -39,7 +39,7 @@ def world(
     files: tuple[str, ...] = ("fulfillment-service/main.go",),
     reviews: tuple[dict[str, Any], ...] = (),
     checks: tuple[dict[str, Any], ...] = (),
-    required: tuple[str, ...] = ("pre-commit", "e2e-vmaas-gate", "check-labels", "OSAC CI"),
+    required: tuple[str, ...] = ("pre-commit", "e2e-vmaas-gate", "check-labels", "jira-reference", "OSAC CI"),
     pr: dict[str, Any] | None = None,
 ) -> FakeGitHub:
     fake = FakeGitHub()
@@ -72,7 +72,7 @@ def approval(user: str = "bob", assoc: str = "MEMBER", commit: str = SHA, state:
     return {"user": {"login": user}, "state": state, "author_association": assoc, "commit_id": commit}
 
 
-def test_the_cheap_checks_are_the_required_ones_minus_the_e2e_gates_the_label_check_and_osac_ci() -> None:
+def test_the_cheap_checks_are_the_required_ones_minus_the_e2e_gates_the_label_checks_and_osac_ci() -> None:
     inputs = fetch_inputs(world(), POLICY, REPO, 7)
     assert [r.context for r in inputs.cheap] == ["pre-commit"]
     assert [r.integration_id for r in inputs.cheap] == [APP]

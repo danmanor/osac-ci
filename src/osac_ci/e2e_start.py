@@ -33,9 +33,9 @@ from osac_ci.policy import Policy
 
 TRUSTED_BOT = "coderabbitai[bot]"
 WRITE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
-# A required check that says nothing about the quality of the change: it disappears with the labels. (The OSAC CI check,
-# a verdict on the others, is already left out by ``required_contexts``.)
-NOT_CHEAP = frozenset({"check-labels"})
+# A required check that says nothing about the quality of the change: the label check, and the Jira reference check that
+# replaces it. (The OSAC CI check, a verdict on the others, is already left out by ``required_contexts``.)
+NOT_CHEAP = frozenset({"check-labels", "jira-reference"})
 
 
 class Action(StrEnum):
