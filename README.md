@@ -935,7 +935,7 @@ GH_TOKEN=... uv run osac-ci e2e-suites-settle --repo osac-project/osac --sha SHA
 
 `e2e-suites-track` runs next to the suite jobs: it creates the checks, shows "Waiting for a runner" while a suite's job is
 queued, "Running" once it has a runner, links the job, and ends when every job runs (or after `--timeout`).
-`e2e-suites-settle` runs last, whatever happened, and completes each check with the result of its job. A suite that does not
+`e2e-suites-settle` runs last, in a job that needs the tracking job, whatever happened, and completes each check with the result of its job. A suite that does not
 run has no check. These checks are for people: the required check stays `E2E`. Actions: `e2e-suites-track` (inputs
 `suites`, `sha`, `run-id`) and `e2e-suites-settle` (input `results`, such as `vmaas=success caas=failure`). The token needs
 `checks: write` and `actions: read`.

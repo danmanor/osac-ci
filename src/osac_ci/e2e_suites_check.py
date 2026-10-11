@@ -6,8 +6,9 @@ running, then the result, with a link to the job's logs. The required check stay
 for the person looking at the pull request, who sees which suite is running or failed and gets to the log in one click.
 
 ``track`` creates the checks when the suites are about to start and keeps them current until every job has a runner.
-``settle`` completes them with the result of each suite job. Only check runs of the GitHub Actions app with these names
-are read or changed. A suite that does not run has no check.
+``settle`` completes them with the result of each suite job; the workflow must run it after ``track`` has ended (a job
+that needs the tracking job), or a late tracking write could reopen a completed check. Only check runs of the GitHub
+Actions app with these names are read or changed. A suite that does not run has no check.
 """
 
 from __future__ import annotations
@@ -140,5 +141,7 @@ def parse_results(items: Sequence[str]) -> dict[str, str]:
         suite, sep, result = item.partition("=")
         if not sep:
             raise ValueError(f"expected suite=result, got {item!r}")
+        if suite in out:
+            raise ValueError(f"suite {suite!r} is given more than once")
         out[suite] = result
     return out

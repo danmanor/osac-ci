@@ -208,6 +208,8 @@ def test_parse_results() -> None:
     assert parse_results(["vmaas=success", "caas=failure"]) == {"vmaas": "success", "caas": "failure"}
     with pytest.raises(ValueError, match="suite=result"):
         parse_results(["vmaas"])
+    with pytest.raises(ValueError, match="more than once"):
+        parse_results(["vmaas=failure", "vmaas=success"])
 
 
 def test_the_settle_command_prints_the_check_ids_and_a_bad_result_exits_3(
