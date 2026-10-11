@@ -237,6 +237,19 @@ def test_start_with_no_check_claims_the_e2e_for_this_run() -> None:
     assert found.check_id == world.checks[0]["id"]
 
 
+def test_the_running_check_carries_a_clickable_link_to_the_workflow_run() -> None:
+    # GitHub keeps the check's own page as the details link when the Actions token writes it, so the text has the link
+    world = World()
+    run_report(world, entry("start"))
+    assert world.checks[0]["output"]["summary"].endswith(f"[Open the workflow run]({URL})")
+
+
+def test_a_waiting_check_has_no_run_link() -> None:
+    world = World()
+    run_report(world, entry("wait-approval"))
+    assert "Open the workflow run" not in world.checks[0]["output"]["summary"]
+
+
 def test_start_turns_the_waiting_check_into_the_running_one_without_a_second_check() -> None:
     world = World()
     waiting = world.add(external_id="waiting")
@@ -342,13 +355,18 @@ def test_finish_completes_the_claimed_check_with_the_result(result: str, title: 
     check = world.checks[0]
     assert (check["status"], check["conclusion"], check["output"]["title"]) == ("completed", result, title)
     assert len(world.checks) == 1 and check["details_url"] == URL
+    assert check["output"]["summary"].endswith(f"[Open the workflow run]({URL})")
 
 
 def test_finish_without_a_claimed_check_creates_a_completed_one() -> None:
     world = World()
     finish(world, REPO, SHA, None, "failure", RUN, URL, "vmaas failed")
     (post,) = world.posts
-    assert post["conclusion"] == "failure" and post["output"]["summary"] == "vmaas failed" and post["head_sha"] == SHA
+    assert (
+        post["conclusion"] == "failure"
+        and post["output"]["summary"].startswith("vmaas failed")
+        and post["head_sha"] == SHA
+    )
 
 
 def test_finish_refuses_a_result_it_does_not_know() -> None:

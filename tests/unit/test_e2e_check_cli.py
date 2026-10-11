@@ -94,7 +94,7 @@ def test_finish_records_the_result_on_the_claimed_check(
     monkeypatch.setattr(cli, "build_client", lambda **_: world)
     args = ["e2e-finish", "--repo", REPO, "--sha", SHA, "--check-id", str(claimed["id"]), "--result", "failure"]
     assert cli.main([*args, "--run-id", str(RUN), "--run-url", URL, "--detail", "caas failed"]) == 0
-    assert claimed["conclusion"] == "failure" and claimed["output"]["summary"] == "caas failed"
+    assert claimed["conclusion"] == "failure" and claimed["output"]["summary"].startswith("caas failed")
     assert f"E2E check {claimed['id']}: failure" in capsys.readouterr().out
 
 

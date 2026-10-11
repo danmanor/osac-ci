@@ -909,7 +909,7 @@ GH_TOKEN=... uv run osac-ci e2e-finish --repo osac-project/osac --sha SHA --chec
 |---|---|
 | `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | in progress, titled with what it waits for, the reason, the suites the change affects, what failed or has not finished, and a sentence on how the E2E starts. Written again only when the text changes |
 | `skip-not-applicable` | completed, success, "Not affected by this change" |
-| `start` | in progress, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only |
+| `start` | in progress, "Running: <suites>", with a link to the workflow run in the text (GitHub keeps the check's own page as its details link when the Actions token writes it); the report answers `start=true` to that run only |
 | `skip-closed` | nothing |
 
 A commit gets its E2E once. A later `start` answer for the same commit starts nothing when another run is still going

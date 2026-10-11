@@ -173,7 +173,7 @@ def _claim(entry: Mapping[str, Any], patch_id: int | None, run_id: int) -> Write
         None,
         f"Running: {', '.join(suites) or 'the full-install suites'}",
         f"Approved by {', '.join(entry.get('approvers') or ()) or 'a reviewer'} and CI passed. The suites run in the "
-        "workflow run this check links to.",
+        "workflow run linked below.",
         f"{RUN_PREFIX}{run_id}",
         link=True,
     )
@@ -271,15 +271,16 @@ def run_is_alive(client: GitHubClient, repo: str, run_id: int) -> bool:
 
 
 def _write(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str) -> int:
-    body: dict[str, Any] = {
-        "status": write.status,
-        "external_id": write.external_id,
-        "output": {"title": write.title, "summary": write.summary},
-    }
+    summary = write.summary
+    body: dict[str, Any] = {"status": write.status, "external_id": write.external_id}
     if write.conclusion:
         body["conclusion"] = write.conclusion
     if write.link and run_url:
+        # GitHub keeps the check's own page as its details link when the Actions token writes it, so the link to the
+        # workflow run goes into the text, where it can be clicked.
         body["details_url"] = run_url
+        summary = f"{summary}\n\n[Open the workflow run]({run_url})"
+    body["output"] = {"title": write.title, "summary": summary}
     base = f"/repos/{check_repo(repo)}/check-runs"
     if write.patch_id is None:
         response = client.request("POST", base, body={**body, "name": CHECK_NAME, "head_sha": sha})
@@ -339,7 +340,7 @@ def finish(
         detail
         or {
             "success": "Every suite that ran passed.",
-            "failure": "A suite failed. Re-run it from the workflow run this check links to.",
+            "failure": "A suite failed. Re-run it from the workflow run linked below.",
             "cancelled": "The run was cancelled before it finished.",
         }[result]
     )
