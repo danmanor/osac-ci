@@ -19,6 +19,11 @@ inputs:
   policy:
     description: Policy file, relative to the root of osac-ci at the pinned commit
     default: policy/osac.yml
+  policy-file:
+    description: >-
+      Policy file given as a path on the runner, used instead of policy. A repository keeps its own E2E policy next to
+      its path filters and checks out the file from its default branch (never from the pull request) to pass it here
+    default: ""
   number:
     description: Pull request number (exactly one). Empty means the pull request is found from head-sha
     default: ""
@@ -62,6 +67,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ inputs.repo }}
         POLICY: ${{ inputs.policy }}
+        POLICY_FILE: ${{ inputs.policy-file }}
         NUMBER: ${{ inputs.number }}
         HEAD_SHA: ${{ inputs.head-sha }}
         ACTION_PATH: ${{ github.action_path }}
@@ -92,8 +98,10 @@ runs:
           exit 0
         fi
         json="$OUT_DIR/e2e-decision.json"
+        policy_path="$root/$POLICY"
+        if [ -n "$POLICY_FILE" ]; then policy_path="$POLICY_FILE"; fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
-        uv run --locked --project "$root" osac-ci e2e-decide --policy "$root/$POLICY" --repo "$REPO" "${which[@]}" \
+        uv run --locked --project "$root" osac-ci e2e-decide --policy "$policy_path" --repo "$REPO" "${which[@]}" \
           --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
         # The answer for a job that starts from it: ready only for exactly one pull request whose answer is "start".
         count=$(jq 'length' "$json")
