@@ -36,7 +36,8 @@ outputs:
     description: >-
       "true" only when exactly one pull request was evaluated and the answer is to start the E2E; "false" in every
       other case (not approved, a cheap check not green, not affected, nothing found, several pull requests with this
-      head), so a job that starts from this fails closed
+      head). It is a string, and the string "false" is truthy in an expression, so a consumer must compare it with
+      'true' (for example needs.decide.outputs.ready == 'true') or convert it with fromJSON(); it fails closed only then
     value: ${{ steps.decide.outputs.ready }}
   reason:
     description: Why, in one line (the decision's reason; a short explanation when nothing or several were evaluated)
