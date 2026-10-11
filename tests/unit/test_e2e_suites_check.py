@@ -40,8 +40,11 @@ class World:
         self.jobs = [j for j in self.jobs if j["name"] != name]
         self.jobs.append({"name": name, "status": status, "html_url": f"https://example.invalid/job/{name.split()[0]}"})
 
-    def add_check(self, name: str, app: str = "github-actions") -> dict[str, Any]:
-        check = {"id": self.next_id, "name": name, "app": {"slug": app}, "status": "in_progress", "output": {}}
+    def add_check(self, name: str, app: str = "github-actions", run: int = RUN) -> dict[str, Any]:
+        check = {
+            "id": self.next_id, "name": name, "app": {"slug": app}, "status": "in_progress", "output": {},
+            "external_id": f"run:{run}",
+        }  # fmt: skip
         self.next_id += 1
         self.checks.append(check)
         return check
@@ -56,7 +59,7 @@ class World:
             self.writes.append(("POST", body))
             check = self.add_check(body["name"])
             check.update(status=body["status"], conclusion=body.get("conclusion"), output=body["output"])
-            check["details_url"] = body.get("details_url")
+            check["details_url"], check["external_id"] = body.get("details_url"), body.get("external_id")
             return Response(201, {"id": check["id"]})
         if method == "PATCH" and (m := re.fullmatch(rf"{BASE}/check-runs/(\d+)", path)):
             self.writes.append(("PATCH", body))
@@ -183,6 +186,24 @@ def test_settle_updates_the_newest_check_of_the_app_not_another_apps() -> None:
     foreign = world.add_check("E2E / VMaaS", app="some-other-app")
     settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"})
     assert newer["status"] == "completed" and older["status"] == "in_progress" and foreign["status"] == "in_progress"
+
+
+def test_settle_never_completes_the_check_of_another_workflow_run() -> None:
+    world = World()
+    other = world.add_check("E2E / VMaaS", run=RUN + 1)  # the newest check of the name, but another run's
+    mine = world.add_check("E2E / VMaaS")
+    world.add_check("E2E / VMaaS", run=RUN + 1)
+    settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "failure"})
+    assert mine["conclusion"] == "failure" and other["status"] == "in_progress"
+    assert all(c["status"] == "in_progress" for c in world.checks if c["external_id"] == f"run:{RUN + 1}")
+
+
+def test_settle_creates_its_own_check_when_only_another_runs_check_exists() -> None:
+    world = World()
+    other = world.add_check("E2E / VMaaS", run=RUN + 1)
+    settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"})
+    assert other["status"] == "in_progress" and len(world.checks) == 2
+    assert world.checks[-1]["external_id"] == f"run:{RUN}" and world.checks[-1]["conclusion"] == "success"
 
 
 @pytest.mark.parametrize(

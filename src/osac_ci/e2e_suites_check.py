@@ -52,14 +52,21 @@ def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: Sequence[str
     return found
 
 
-def _latest(client: GitHubClient, repo: str, sha: str, name: str) -> int | None:
+def _latest(client: GitHubClient, repo: str, sha: str, name: str, run_id: int) -> int | None:
+    """The newest check of this name that THIS workflow run wrote: another run's check is never completed here."""
     runs = paginate(
         client,
         f"/repos/{check_repo(repo)}/commits/{_check_sha(sha)}/check-runs",
         key="check_runs",
         params={"check_name": name, "filter": "all"},
     )
-    mine = [r for r in runs if r.get("name") == name and (r.get("app") or {}).get("slug") == APP_SLUG]
+    mine = [
+        r
+        for r in runs
+        if r.get("name") == name
+        and (r.get("app") or {}).get("slug") == APP_SLUG
+        and r.get("external_id") == f"{RUN_PREFIX}{run_id}"
+    ]
     return max((int(r["id"]) for r in mine), default=None)
 
 
@@ -127,7 +134,13 @@ def settle(
         }[result]
         job = jobs.get(suite)
         write = Write(
-            _latest(client, repo, sha, name), "completed", result, title, summary, f"{RUN_PREFIX}{run_id}", link=True
+            _latest(client, repo, sha, name, run_id),
+            "completed",
+            result,
+            title,
+            summary,
+            f"{RUN_PREFIX}{run_id}",
+            link=True,
         )
         url, label = (job.url, JOB_LINK) if job else (run_url, RUN_LINK)
         done[suite] = write_check(client, repo, sha, write, url, name=name, link_label=label)
