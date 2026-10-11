@@ -326,6 +326,15 @@ def _parser() -> argparse.ArgumentParser:
     dec.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     dec.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
 
+    suites_cmd = sub.add_parser(
+        "e2e-suites",
+        help="list the E2E suites a set of changed files needs (a merge queue entry has no pull request to ask)",
+    )
+    suites_cmd.add_argument("--policy", type=Path, required=True)
+    suites_cmd.add_argument(
+        "--files-from", type=Path, required=True, help="a file with one changed path per line (as git diff --name-only)"
+    )
+
     erep = sub.add_parser(
         "e2e-report",
         help="show the e2e-decide answer on the pull request as the one E2E check, and say whether this run starts it",
@@ -474,6 +483,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "policy":
         print(f"OK: {policy.repo}: {len(policy.jobs)} jobs")
+        return 0
+
+    if args.command == "e2e-suites":
+        try:
+            names = [n for n in args.files_from.read_text(encoding="utf-8").splitlines() if n]
+        except OSError as exc:
+            print(f"error: cannot read {args.files_from}: {exc}", file=sys.stderr)
+            return 3
+        print(json.dumps(list(e2e_start.suites_for_files(policy, names))))
         return 0
 
     if args.command == "report":

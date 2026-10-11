@@ -1,0 +1,42 @@
+---
+name: List the E2E suites a change needs
+description: >-
+  Say which full-install E2E suites a list of changed files needs, by the rules of the repository's E2E policy (the same
+  rules that judge a pull request). For a merge queue entry, which has no pull request to ask. Called from a workflow of
+  the repository, pinned to a commit of osac-ci, like the other actions.
+
+# The calling workflow decides when this runs. It never reads GitHub and never checks out the calling repository; the
+# policy and the list of files are paths the calling workflow prepared. Every input reaches the shell through an
+# environment variable, never through the script text.
+inputs:
+  policy-file:
+    description: The repository's E2E policy, as a path on the runner
+    required: true
+  files-file:
+    description: A file with one changed path per line, as git diff --name-only writes it
+    required: true
+
+outputs:
+  suites:
+    description: JSON list of the suites the change needs, such as ["vmaas","caas"] (an empty list when none)
+    value: ${{ steps.suites.outputs.suites }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: List the suites
+      id: suites
+      shell: bash
+      env:
+        POLICY_FILE: ${{ inputs.policy-file }}
+        FILES_FILE: ${{ inputs.files-file }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        suites=$(uv run --locked --project "$root" osac-ci e2e-suites --policy "$POLICY_FILE" --files-from "$FILES_FILE")
+        echo "suites=$suites" >> "$GITHUB_OUTPUT"
+        echo "E2E suites needed: $suites" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -144,9 +144,20 @@ def applicable_suites(inputs: Inputs) -> tuple[Suite, ...]:
     """The suites this change needs. When the changed files are not known completely nothing is skipped on a guess."""
     if not inputs.changed_files or not inputs.changed_files_known:
         return inputs.suites
-    return tuple(
-        s for s in inputs.suites if filters_hold(inputs.changed_files, inputs.filters, s.filters, s.filters_any)
-    )
+    return _needed(inputs.suites, inputs.changed_files, inputs.filters)
+
+
+def _needed(suites: Iterable[Suite], files: Sequence[str], filters: Mapping[str, Sequence[str]]) -> tuple[Suite, ...]:
+    return tuple(s for s in suites if filters_hold(files, filters, s.filters, s.filters_any))
+
+
+def suites_for_files(policy: Policy, files: Sequence[str]) -> tuple[str, ...]:
+    """The names of the suites a change to these files needs, by the same rule a pull request is judged by. No files
+    means nothing is known, so no suite is skipped."""
+    suites = suites_of(policy)
+    if not files:
+        return tuple(s.name for s in suites)
+    return tuple(s.name for s in _needed(suites, files, policy.path_filters.filters))
 
 
 def _e2e_checks(inputs: Inputs) -> tuple[str, ...]:

@@ -922,6 +922,19 @@ changed. Nothing is written unless exactly one pull request has the head commit.
 `check-id`, `sha`, `state`, `suites`, `number`; compare `start` with `'true'`) and `e2e-finish` (run it last, whatever
 happened). The token needs `checks: write`, `actions: read` and `pull-requests: read`.
 
+### Which suites a change needs, without a pull request
+
+```bash
+git diff --name-only BASE HEAD > files
+uv run osac-ci e2e-suites --policy .github/e2e-policy.yml --files-from files    # ["vmaas","caas"]
+```
+
+A merge queue entry has no pull request to ask, but it needs the same answer: which suites does this change touch. `e2e-suites`
+applies the E2E jobs of a policy to a list of changed files with the rules `e2e-decide` uses, and prints the suite names as
+JSON. An empty list of files means nothing is known, so no suite is skipped. `.github/actions/e2e-suites` runs it from a
+workflow (input `policy-file` and `files-file`, output `suites`). `e2e-decide` takes the same kind of policy through its
+`policy-file` input, so a repository keeps its E2E policy next to its path filters and nothing is copied here.
+
 ### Comparing the E2E decision with what the current flow did
 
 ```bash
