@@ -136,6 +136,21 @@ def test_unknown_changed_files_never_skip_a_suite() -> None:
 # approvals ------------------------------------------------------------------------------------------------------
 
 
+def test_the_osac_ci_app_counts_as_an_approver_whatever_its_association() -> None:
+    d = decide(inputs(reviews=(review("osac-ci[bot]", assoc="NONE"),)))
+    assert d.action is Action.START and d.approvers == ("osac-ci[bot]",)
+
+
+def test_another_app_does_not_count_as_an_approver() -> None:
+    d = decide(inputs(reviews=(review("some-other-app[bot]", assoc="NONE"),)))
+    assert d.action is Action.WAIT_APPROVAL
+
+
+def test_the_osac_ci_app_approving_its_own_pull_request_does_not_count() -> None:
+    d = decide(replace(inputs(), author="osac-ci[bot]", reviews=(review("osac-ci[bot]", assoc="NONE"),)))
+    assert d.action is Action.WAIT_APPROVAL
+
+
 def test_coderabbit_counts_as_an_approver_whatever_its_association() -> None:
     d = decide(inputs(reviews=(review("coderabbitai[bot]", assoc="NONE"),)))
     assert d.action is Action.START and d.approvers == ("coderabbitai[bot]",)

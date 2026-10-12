@@ -4,7 +4,7 @@ One question, answered from the current state of the pull request, with the reas
 
 * the PR is open and not a draft;
 * the change touches something the E2E suites test (the same path filters the workflows use today);
-* a person with write access, or CodeRabbit, has approved the PR, and nobody has requested changes;
+* a person with write access, CodeRabbit or the OSAC CI app has approved the PR, and nobody has requested changes;
 * the cheap checks (every required check except the E2E gates) have passed on the head commit.
 
 Only then does the answer say ``start``. Every other answer says what the PR is waiting for. The function is pure; the
@@ -31,7 +31,9 @@ from osac_ci.paths import filters_hold
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
 
-TRUSTED_BOT = "coderabbitai[bot]"
+# Bots whose approval counts whatever their association with the repository: CodeRabbit, and the OSAC CI app, which
+# approves dependency updates that need no person (see ``bot_approve``).
+TRUSTED_BOTS = frozenset({"coderabbitai[bot]", "osac-ci[bot]"})
 WRITE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
 # A required check that says nothing about the quality of the change: the label check, the Jira reference check that
 # replaces it, and the E2E check itself (kept by ``e2e_check``; the E2E cannot wait for its own result). (The OSAC CI
@@ -121,7 +123,7 @@ def _latest_reviews(reviews: Iterable[Review]) -> dict[str, Review]:
 def _qualifies(review: Review, author: str) -> bool:
     if review.user == author:
         return False
-    return review.user == TRUSTED_BOT or review.association in WRITE_ASSOCIATIONS
+    return review.user in TRUSTED_BOTS or review.association in WRITE_ASSOCIATIONS
 
 
 def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
@@ -133,7 +135,7 @@ def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[s
     for user, review in sorted(_latest_reviews(inputs.reviews).items()):
         if not _qualifies(review, inputs.author):
             continue
-        if review.state == "CHANGES_REQUESTED" and user != TRUSTED_BOT:
+        if review.state == "CHANGES_REQUESTED" and user not in TRUSTED_BOTS:
             blocking.append(user)
         elif review.state == "APPROVED":
             (approvers if review.commit_id == inputs.head_sha else stale).append(user)
