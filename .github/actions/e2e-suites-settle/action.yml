@@ -29,6 +29,11 @@ inputs:
   run-url:
     description: Link of that run, used when a suite has no job
     default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  kind:
+    description: >-
+      Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
+      app whose token is given, shown with a spinner; the token must be an app installation token with checks: write)
+    default: statuses
 
 runs:
   using: composite
@@ -45,13 +50,18 @@ runs:
         RESULTS: ${{ inputs.results }}
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
+        KIND: ${{ inputs.kind }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         root="$ACTION_PATH/../../.."
+        case "$KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The kind must be statuses or checks."; exit 1 ;;
+        esac
         case "$RUN_ID" in "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;; esac
         args=()
         for pair in $RESULTS; do args+=(--result "$pair"); done
         if [ "${#args[@]}" -eq 0 ]; then echo "::notice::No suite result to record."; exit 0; fi
         uv run --locked --project "$root" osac-ci e2e-suites-settle --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" \
-          --run-url="$RUN_URL" "${args[@]}"
+          --run-url="$RUN_URL" --kind "$KIND" "${args[@]}"

@@ -345,6 +345,9 @@ def _parser() -> argparse.ArgumentParser:
     erep.add_argument("--run-url", default="", help="link of that run, shown on the check")
     erep.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     erep.add_argument("--json-file", type=Path, help="also write the JSON answer here")
+    erep.add_argument(
+        "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
+    )
 
     efin = sub.add_parser("e2e-finish", help="record how the suites ended, as the E2E status")
     efin.add_argument("--repo", required=True, help="owner/name")
@@ -352,6 +355,9 @@ def _parser() -> argparse.ArgumentParser:
     efin.add_argument("--result", required=True, choices=e2e_check.RESULTS)
     efin.add_argument("--run-url", default="", help="link of the workflow run, shown with the status")
     efin.add_argument("--detail", default="", help="text after the result (default: none)")
+    efin.add_argument(
+        "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
+    )
 
     strack = sub.add_parser(
         "e2e-suites-track",
@@ -364,6 +370,9 @@ def _parser() -> argparse.ArgumentParser:
     strack.add_argument("--suites", required=True, help="comma-separated: vmaas,caas,bmaas")
     strack.add_argument("--timeout", type=float, default=7200, help="seconds to wait for the jobs to get a runner")
     strack.add_argument("--interval", type=float, default=30, help="seconds between looks")
+    strack.add_argument(
+        "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
+    )
 
     ssettle = sub.add_parser("e2e-suites-settle", help="complete the E2E / <Suite> checks with the suite results")
     ssettle.add_argument("--repo", required=True, help="owner/name")
@@ -371,6 +380,9 @@ def _parser() -> argparse.ArgumentParser:
     ssettle.add_argument("--run-id", type=int, required=True)
     ssettle.add_argument("--run-url", default="")
     ssettle.add_argument("--result", action="append", default=[], metavar="SUITE=RESULT", help="repeat per suite")
+    ssettle.add_argument(
+        "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
+    )
 
     rep = sub.add_parser("replay", help="check the planner against recently merged PRs (parity evidence)")
     rep.add_argument("--policy", type=Path, required=True)
@@ -426,7 +438,7 @@ def _e2e_report(args: argparse.Namespace) -> int:
         entries = json.loads(args.decision_file.read_text(encoding="utf-8"))
         if not isinstance(entries, list):
             raise ValueError("the decision file must hold a list")
-        found = e2e_check.report(build_client(), args.repo, entries, args.run_id, args.run_url)
+        found = e2e_check.report(build_client(), args.repo, entries, args.run_id, args.run_url, args.kind)
     except (OSError, GitHubError, KeyError, ValueError) as exc:
         print(f"error: e2e-report failed: {exc}", file=sys.stderr)
         return 3
@@ -446,11 +458,13 @@ def _e2e_suites(args: argparse.Namespace) -> int:
             suites = [s for s in args.suites.split(",") if s]
             ids = e2e_suites_check.track(
                 build_client(), args.repo, args.sha, args.run_id, args.run_url, suites,
-                timeout=args.timeout, interval=args.interval,
+                timeout=args.timeout, interval=args.interval, kind=args.kind,
             )  # fmt: skip
         else:
             results = e2e_suites_check.parse_results(args.result)
-            ids = e2e_suites_check.settle(build_client(), args.repo, args.sha, args.run_id, args.run_url, results)
+            ids = e2e_suites_check.settle(
+                build_client(), args.repo, args.sha, args.run_id, args.run_url, results, args.kind
+            )
     except (GitHubError, KeyError, ValueError) as exc:
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 3
@@ -501,7 +515,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "e2e-finish":
         try:
-            e2e_check.finish(build_client(), args.repo, args.sha, args.result, args.run_url, args.detail)
+            e2e_check.finish(build_client(), args.repo, args.sha, args.result, args.run_url, args.detail, args.kind)
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: e2e-finish failed: {exc}", file=sys.stderr)
             return 3

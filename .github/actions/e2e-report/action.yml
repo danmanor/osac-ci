@@ -29,6 +29,11 @@ inputs:
   run-url:
     description: Link of that run, shown with the status
     default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  kind:
+    description: >-
+      Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
+      app whose token is given, shown with a spinner; the token must be an app installation token with checks: write)
+    default: statuses
 
 outputs:
   start:
@@ -64,11 +69,16 @@ runs:
         DECISION: ${{ inputs.decision-file }}
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
+        KIND: ${{ inputs.kind }}
         ACTION_PATH: ${{ github.action_path }}
         OUT_DIR: ${{ runner.temp }}
       run: |
         set -euo pipefail
         root="$ACTION_PATH/../../.."
+        case "$KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The kind must be statuses or checks."; exit 1 ;;
+        esac
         case "$RUN_ID" in
           "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;;
         esac
@@ -86,7 +96,7 @@ runs:
         json="$OUT_DIR/e2e-report.json"
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci e2e-report --repo "$REPO" --decision-file "$DECISION" \
-          --run-id "$RUN_ID" --run-url="$RUN_URL" --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          --run-id "$RUN_ID" --run-url="$RUN_URL" --json-file "$json" --kind "$KIND" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
         {
           echo "start=$(jq -r '.start' "$json")"
           echo "sha=$(jq -r '.sha' "$json")"

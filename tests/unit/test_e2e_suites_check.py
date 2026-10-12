@@ -268,7 +268,7 @@ def run_action(tmp_path: Path, name: str, step: str, env: dict[str, str]) -> tup
     uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
     script = next(s["run"] for s in action(name)["runs"]["steps"] if s.get("name") == step)
     full = {"PATH": f"{bin_dir}:{os.environ['PATH']}", "GH_TOKEN": "t", "REPO": "o/r", "SHA": SHA, "RUN_ID": "7",
-            "RUN_URL": "https://x/y", "ACTION_PATH": "/a/b/c", **env}  # fmt: skip
+            "RUN_URL": "https://x/y", "ACTION_PATH": "/a/b/c", "KIND": "statuses", **env}  # fmt: skip
     done = subprocess.run(["bash", "-c", script], env=full, capture_output=True, text=True, check=False)
     args = tmp_path / "uv-args"
     return done.returncode, args.read_text() if args.exists() else ""
@@ -284,6 +284,24 @@ def test_the_track_action_passes_its_inputs_to_the_command(tmp_path: Path) -> No
 @pytest.mark.parametrize(("key", "value"), [("RUN_ID", "7;ls"), ("TIMEOUT", "1h")])
 def test_the_track_action_refuses_a_run_id_or_timeout_that_is_not_digits(tmp_path: Path, key: str, value: str) -> None:
     code, args = run_action(tmp_path, "e2e-suites-track", "Track", {"SUITES": "vmaas", "TIMEOUT": "60", key: value})
+    assert code == 1 and args == ""
+
+
+@pytest.mark.parametrize(
+    ("name", "step", "extra"),
+    [
+        ("e2e-suites-track", "Track", {"SUITES": "vmaas", "TIMEOUT": "60"}),
+        ("e2e-suites-settle", "Settle", {"RESULTS": "vmaas=success"}),
+    ],
+)
+def test_both_suite_actions_pass_the_kind_and_refuse_a_bad_one(
+    tmp_path: Path, name: str, step: str, extra: dict
+) -> None:
+    code, args = run_action(tmp_path, name, step, {**extra, "KIND": "checks"})
+    assert code == 0 and "--kind checks" in args
+    bad = tmp_path / "bad"
+    bad.mkdir()
+    code, args = run_action(bad, name, step, {**extra, "KIND": "x"})
     assert code == 1 and args == ""
 
 

@@ -37,6 +37,8 @@ from osac_ci.github.snapshot import COMMIT_SHA
 
 CONTEXT = "E2E"
 CREATOR = "github-actions[bot]"  # who a workflow's built-in token writes statuses as
+CHECK_APP = "osac-ci"  # the GitHub App whose check runs are read when the kind is "checks"
+KINDS = ("statuses", "checks")  # where the E2E lines are written: commit statuses, or check runs of the app
 DESCRIPTION_MAX = 140  # what GitHub keeps of a status description
 WAITING_ID = "waiting"  # external id of a status that waits
 NOT_AFFECTED_ID = "not-affected"
@@ -213,9 +215,33 @@ def run_of_url(url: str) -> int | None:
     return int(found.group(1)) if found else None
 
 
-def newest_status(client: GitHubClient, repo: str, sha: str, context: str) -> Mapping[str, Any] | None:
-    """The newest status of this context that the GitHub Actions bot wrote on the commit. GitHub lists a commit's
-    statuses newest first."""
+def newest_status(
+    client: GitHubClient, repo: str, sha: str, context: str, kind: str = "statuses"
+) -> Mapping[str, Any] | None:
+    """The newest line of this name that this workflow side wrote on the commit, as a status-shaped mapping (``state``,
+    ``description``, ``target_url``). Statuses: those of the GitHub Actions bot (GitHub lists them newest first). Check
+    runs: those of the OSAC CI app, the newest by id; an in-progress run is ``pending``, a finished one ``success``,
+    ``failure`` or ``error`` (a cancelled one)."""
+    if kind == "checks":
+        runs = paginate(
+            client,
+            f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs",
+            key="check_runs",
+            params={"check_name": context, "filter": "all"},
+        )
+        mine = [r for r in runs if r.get("name") == context and (r.get("app") or {}).get("slug") == CHECK_APP]
+        if not mine:
+            return None
+        run = max(mine, key=lambda r: int(r["id"]))
+        done = str(run.get("status")) == "completed"
+        state = (
+            {"success": "success", "failure": "failure"}.get(str(run.get("conclusion")), "error") if done else "pending"
+        )
+        return {
+            "state": state,
+            "description": str((run.get("output") or {}).get("title") or ""),
+            "target_url": run.get("details_url") or "",
+        }
     statuses = paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/statuses")
     for status in statuses:
         if status.get("context") == context and (status.get("creator") or {}).get("login") == CREATOR:
@@ -239,8 +265,8 @@ def existing_from(status: Mapping[str, Any]) -> Existing:
     return Existing(state, description, external)
 
 
-def latest_check(client: GitHubClient, repo: str, sha: str) -> Existing | None:
-    status = newest_status(client, repo, sha, CONTEXT)
+def latest_check(client: GitHubClient, repo: str, sha: str, kind: str = "statuses") -> Existing | None:
+    status = newest_status(client, repo, sha, CONTEXT, kind)
     return existing_from(status) if status is not None else None
 
 
@@ -254,24 +280,61 @@ def run_is_alive(client: GitHubClient, repo: str, run_id: int) -> bool:
 
 
 def post_status(
-    client: GitHubClient, repo: str, sha: str, context: str, state: str, description: str, target_url: str = ""
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    context: str,
+    state: str,
+    description: str,
+    target_url: str = "",
+    kind: str = "statuses",
 ) -> None:
+    """Write one line. Statuses: a commit status. Check runs: a check run of the token's app (the OSAC CI app), in
+    progress for ``pending`` (the page draws a spinner), else completed with ``success``, ``failure`` or ``cancelled``;
+    the newest of a name counts, so nothing is patched."""
     if state not in STATES:
         raise ValueError(f"state must be one of {', '.join(STATES)}, not {state!r}")
-    body: dict[str, str] = {"state": state, "context": context, "description": describe(description)}
-    if target_url:
-        body["target_url"] = target_url
-    response = client.request("POST", f"/repos/{check_repo(repo)}/statuses/{check_sha(sha)}", body=body)
+    if kind not in KINDS:
+        raise ValueError(f"kind must be one of {', '.join(KINDS)}, not {kind!r}")
+    text = describe(description)
+    if kind == "checks":
+        body: dict[str, Any] = {
+            "name": context,
+            "head_sha": check_sha(sha),
+            "output": {"title": text, "summary": text + (f"\n\n[Details]({target_url})" if target_url else "")},
+        }
+        if state == "pending":
+            body["status"] = "in_progress"
+        else:
+            body["status"] = "completed"
+            body["conclusion"] = {"success": "success", "failure": "failure", "error": "cancelled"}[state]
+        if target_url:
+            body["details_url"] = target_url
+        response = client.request("POST", f"/repos/{check_repo(repo)}/check-runs", body=body)
+        what = "check"
+    else:
+        body = {"state": state, "context": context, "description": text}
+        if target_url:
+            body["target_url"] = target_url
+        response = client.request("POST", f"/repos/{check_repo(repo)}/statuses/{check_sha(sha)}", body=body)
+        what = "status"
     if response.status not in (200, 201):
         message = response.data.get("message", "") if isinstance(response.data, dict) else ""
-        raise GitHubError(response.status, f"writing the {context} status failed: {message}")
+        raise GitHubError(response.status, f"writing the {context} {what} failed: {message}")
 
 
-def write_status(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str) -> None:
-    post_status(client, repo, sha, CONTEXT, write.state, write.description, run_url if write.link else "")
+def write_status(client: GitHubClient, repo: str, sha: str, write: Write, run_url: str, kind: str = "statuses") -> None:
+    post_status(client, repo, sha, CONTEXT, write.state, write.description, run_url if write.link else "", kind)
 
 
-def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]], run_id: int, run_url: str) -> Report:
+def report(
+    client: GitHubClient,
+    repo: str,
+    entries: Sequence[Mapping[str, Any]],
+    run_id: int,
+    run_url: str,
+    kind: str = "statuses",
+) -> Report:
     """Show the answer of ``e2e-decide`` on the pull request and, for ``start``, claim the E2E for this run. Nothing
     is done unless exactly one pull request was decided."""
     if not all(isinstance(e, Mapping) for e in entries):
@@ -281,16 +344,16 @@ def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]]
         return Report("", None, "ignored", False, (), note)
     entry = entries[0]
     sha = str(entry["head_sha"])
-    existing = latest_check(client, repo, sha)
+    existing = latest_check(client, repo, sha, kind)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
     for write in outcome.writes:
-        write_status(client, repo, sha, write, run_url)
+        write_status(client, repo, sha, write, run_url, kind)
     number = int(entry["number"])
     if outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
         # workflow must also run one decision at a time per commit; this look only narrows the window.
-        newest = latest_check(client, repo, sha)
+        newest = latest_check(client, repo, sha, kind)
         if newest is None or newest.run_id != run_id:
             other = f"run {newest.run_id}" if newest is not None and newest.run_id else "another run"
             return Report(sha, number, "already-running", False, _suites(entry), f"{other} claimed the E2E first")
@@ -298,17 +361,19 @@ def report(client: GitHubClient, repo: str, entries: Sequence[Mapping[str, Any]]
         # attempt of this run). The tracking job keeps them current from here on.
         for suite in _suites(entry):
             if suite in SUITE_LABELS:
-                post_status(client, repo, sha, suite_context(suite), "pending", "Waiting for a runner", run_url)
+                post_status(client, repo, sha, suite_context(suite), "pending", "Waiting for a runner", run_url, kind)
     return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note)
 
 
-def finish(client: GitHubClient, repo: str, sha: str, result: str, run_url: str, detail: str = "") -> None:
+def finish(
+    client: GitHubClient, repo: str, sha: str, result: str, run_url: str, detail: str = "", kind: str = "statuses"
+) -> None:
     """Record how the suites ended."""
     if result not in RESULTS:
         raise ValueError(f"result must be one of {', '.join(RESULTS)}, not {result!r}")
     title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
     state = {"success": "success", "failure": "failure", "cancelled": "error"}[result]
-    write_status(client, repo, sha, Write(state, f"{title}: {detail}" if detail else title), run_url)
+    write_status(client, repo, sha, Write(state, f"{title}: {detail}" if detail else title), run_url, kind)
 
 
 # rendering ------------------------------------------------------------------------------------------------------

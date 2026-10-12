@@ -26,6 +26,11 @@ inputs:
   run-url:
     description: Link of that run, shown with the status
     default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  kind:
+    description: >-
+      Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
+      app whose token is given, shown with a spinner; the token must be an app installation token with checks: write)
+    default: statuses
 
 runs:
   using: composite
@@ -42,10 +47,15 @@ runs:
         RESULT: ${{ inputs.result }}
         DETAIL: ${{ inputs.detail }}
         RUN_URL: ${{ inputs.run-url }}
+        KIND: ${{ inputs.kind }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
         root="$ACTION_PATH/../../.."
+        case "$KIND" in
+          statuses | checks) ;;
+          *) echo "::error::The kind must be statuses or checks."; exit 1 ;;
+        esac
         case "$RESULT" in
           success | failure | cancelled) ;;
           *) echo "::error::The result must be success, failure or cancelled."; exit 1 ;;
@@ -54,7 +64,7 @@ runs:
           "" | *[!0-9a-f]*) echo "::error::The head commit must be 40 lower-case hexadecimal digits."; exit 1 ;;
         esac
         if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
-        args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-url="$RUN_URL")
+        args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-url="$RUN_URL" --kind "$KIND")
         if [ -n "$DETAIL" ]; then args+=(--detail="$DETAIL"); fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci e2e-finish "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -67,6 +67,7 @@ def track(
     *,
     timeout: float = 7200,
     interval: float = 30,
+    kind: str = "statuses",
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> list[str]:
@@ -84,7 +85,7 @@ def track(
             url = job.url if job else run_url
             if shown.get(suite) == (description, url):
                 continue
-            post_status(client, repo, sha, names[suite], state, description, url)
+            post_status(client, repo, sha, names[suite], state, description, url, kind)
             shown[suite] = (description, url)
         if all(s in jobs and jobs[s].status != "queued" for s in suites) or clock() >= deadline:
             return list(shown)
@@ -92,7 +93,13 @@ def track(
 
 
 def settle(
-    client: GitHubClient, repo: str, sha: str, run_id: int, run_url: str, results: Mapping[str, str]
+    client: GitHubClient,
+    repo: str,
+    sha: str,
+    run_id: int,
+    run_url: str,
+    results: Mapping[str, str],
+    kind: str = "statuses",
 ) -> list[str]:
     """Complete each suite's status with the result of its job. A status that belongs to a newer run is left alone
     (the newest status of a name is what the page shows). Returns the suites it wrote."""
@@ -105,14 +112,14 @@ def settle(
     written: list[str] = []
     for suite, result in results.items():
         name = context(suite)
-        newest = newest_status(client, repo, sha, name)
+        newest = newest_status(client, repo, sha, name, kind)
         owner = run_of_url(str(newest.get("target_url") or "")) if newest is not None else None
         if owner is not None and owner != run_id:
             continue
         title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
         state = {"success": "success", "failure": "failure", "cancelled": "error"}[result]
         job = jobs.get(suite)
-        post_status(client, repo, sha, name, state, title, job.url if job else run_url)
+        post_status(client, repo, sha, name, state, title, job.url if job else run_url, kind)
         written.append(suite)
     return written
 

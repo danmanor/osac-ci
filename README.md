@@ -927,6 +927,21 @@ Actions: `e2e-report` (outputs `start`, `sha`, `state`, `suites`, `number`; comp
 (run it last, whatever happened). The token needs `statuses: write`, `actions: read` and `pull-requests: read`. The ruleset
 requires the context `E2E` (a status carries no app, so the requirement names only the context).
 
+#### Statuses or check runs (`kind`)
+
+All the E2E lines (`E2E` and `E2E / <Suite>`) can be written two ways, chosen by `--kind` (action input `kind`):
+
+| Kind | What it is | What the page shows |
+|---|---|---|
+| `statuses` (default) | commit statuses of the token's identity (`github-actions[bot]` for a workflow's built-in token) | a yellow dot for "pending" (there is no spinner for a status), the text after it |
+| `checks` | check runs of the GitHub App whose installation token is given (`osac-ci`) | a spinner while in progress, a tick or cross when completed, under the exact name |
+
+A check run written with a workflow's built-in token is attached to the oldest check suite the Actions app has on that
+commit, which may belong to a `pull_request_review` run, and the page does not draw those. An app installation token gets
+the app's own suite per commit, which the page always draws. So `checks` needs a token minted for an app with
+`checks: write` (the OSAC CI app), and the merge rule can then require the check from that app only. The kind changes only
+where the lines go: the decisions, the claim and the newest-wins rule are the same.
+
 ### One status per suite on the pull request
 
 The suites run in a workflow of the default branch, so their jobs are not listed on the pull request. Two commands put a
