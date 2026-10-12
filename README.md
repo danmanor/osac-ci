@@ -934,7 +934,7 @@ All the E2E lines (`E2E` and `E2E / <Suite>`) can be written two ways, chosen by
 | Kind | What it is | What the page shows |
 |---|---|---|
 | `statuses` (default) | commit statuses of the token's identity (`github-actions[bot]` for a workflow's built-in token) | a yellow dot for "pending" (there is no spinner for a status), the text after it |
-| `checks` | check runs of the GitHub App whose installation token is given (`osac-ci`) | a spinner while in progress, a tick or cross when completed, under the exact name |
+| `checks` | check runs of the GitHub App whose installation token is given (`osac-ci`) | a dot while queued (waiting for an approval, or for a runner), a spinner only while it runs, a tick or cross when completed, under the exact name |
 
 A check run written with a workflow's built-in token is attached to the oldest check suite the Actions app has on that
 commit, which may belong to a `pull_request_review` run, and the page does not draw those. An app installation token gets

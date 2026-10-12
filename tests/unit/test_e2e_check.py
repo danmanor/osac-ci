@@ -188,6 +188,12 @@ def test_every_waiting_answer_has_its_own_title(action: str, title: str) -> None
     assert world.newest()["description"] == f"{title}: why"
 
 
+def test_a_reason_that_only_repeats_the_title_is_left_out() -> None:
+    world = World()
+    run_report(world, entry("skip-draft", reason="the pull request is a draft"))
+    assert world.newest()["description"] == "Waiting: the pull request is a draft"
+
+
 def test_a_long_reason_is_cut_to_what_a_status_can_hold() -> None:
     world = World()
     run_report(world, entry("wait-approval", reason="because " * 40))

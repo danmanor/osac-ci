@@ -47,6 +47,10 @@ RUNNING_PREFIX = "Running"  # a pending status that starts like this is the clai
 NOT_AFFECTED_TITLE = "Not affected by this change"
 RESULTS = ("success", "failure", "cancelled")
 STATES = ("pending", "success", "failure", "error")  # what GitHub accepts for a status
+# What this module writes: those, and "waiting", which is not running yet. A check run that waits is queued (the page
+# draws a dot) and only one that runs is in progress (the page draws a spinner); a status has no such difference, so a
+# waiting status is pending like a running one.
+WRITE_STATES = (*STATES, "waiting")
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
 SUITE_LABELS = {"vmaas": "VMaaS", "caas": "CaaS", "bmaas": "BMaaS"}  # the suites that have a line of their own
 
@@ -89,7 +93,7 @@ class Existing:
 class Write:
     """One status to write. ``link`` points it at the workflow run that is writing it."""
 
-    state: str  # pending | success | failure | error
+    state: str  # waiting | pending (running) | success | failure | error
     description: str
     link: bool = True
 
@@ -138,11 +142,12 @@ def waiting_description(entry: Mapping[str, Any]) -> str:
     action = str(entry.get("action", ""))
     title = WAITING_TITLES.get(action, f"Waiting: {action}")
     reason = str(entry.get("reason", "")).strip()
-    return describe(f"{title}: {reason}" if reason else title)
+    # a reason that only says again what the title says (a draft) is left out
+    return describe(f"{title}: {reason}" if reason and reason.lower() not in title.lower() else title)
 
 
 def _waiting(entry: Mapping[str, Any], existing: Existing | None, alive: Callable[[int], bool]) -> Outcome:
-    write = Write("pending", waiting_description(entry))
+    write = Write("waiting", waiting_description(entry))
     if existing is None:
         return Outcome("waiting", False, (write,))
     if existing.phase is Phase.WAITING:
@@ -292,8 +297,8 @@ def post_status(
     """Write one line. Statuses: a commit status. Check runs: a check run of the token's app (the OSAC CI app), in
     progress for ``pending`` (the page draws a spinner), else completed with ``success``, ``failure`` or ``cancelled``;
     the newest of a name counts, so nothing is patched."""
-    if state not in STATES:
-        raise ValueError(f"state must be one of {', '.join(STATES)}, not {state!r}")
+    if state not in WRITE_STATES:
+        raise ValueError(f"state must be one of {', '.join(WRITE_STATES)}, not {state!r}")
     if kind not in KINDS:
         raise ValueError(f"kind must be one of {', '.join(KINDS)}, not {kind!r}")
     text = describe(description)
@@ -303,7 +308,9 @@ def post_status(
             "head_sha": check_sha(sha),
             "output": {"title": text, "summary": text + (f"\n\n[Details]({target_url})" if target_url else "")},
         }
-        if state == "pending":
+        if state == "waiting":
+            body["status"] = "queued"
+        elif state == "pending":
             body["status"] = "in_progress"
         else:
             body["status"] = "completed"
@@ -313,7 +320,7 @@ def post_status(
         response = client.request("POST", f"/repos/{check_repo(repo)}/check-runs", body=body)
         what = "check"
     else:
-        body = {"state": state, "context": context, "description": text}
+        body = {"state": "pending" if state == "waiting" else state, "context": context, "description": text}
         if target_url:
             body["target_url"] = target_url
         response = client.request("POST", f"/repos/{check_repo(repo)}/statuses/{check_sha(sha)}", body=body)
@@ -361,7 +368,7 @@ def report(
         # attempt of this run). The tracking job keeps them current from here on.
         for suite in _suites(entry):
             if suite in SUITE_LABELS:
-                post_status(client, repo, sha, suite_context(suite), "pending", "Waiting for a runner", run_url, kind)
+                post_status(client, repo, sha, suite_context(suite), "waiting", "Waiting for a runner", run_url, kind)
     return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note)
 
 

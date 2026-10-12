@@ -53,7 +53,7 @@ def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: Sequence[str
 
 def _state(job: Job | None) -> tuple[str, str]:
     if job is None or job.status == "queued":
-        return "Waiting for a runner", "pending"
+        return "Waiting for a runner", "waiting"
     return "Running", "pending"
 
 

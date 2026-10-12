@@ -83,23 +83,43 @@ def run_report(world: Checks, *entries: dict[str, Any], run_id: int = RUN) -> e2
     return report(world, REPO, entries, run_id, URL, "checks")
 
 
-def test_a_waiting_line_is_an_in_progress_check_run_with_the_text_as_its_title() -> None:
+def test_a_waiting_line_is_a_queued_check_run_so_the_page_draws_no_spinner() -> None:
     world = Checks()
     run_report(world, entry("wait-approval", reason="no approval yet"))
     (post,) = world.writes
-    assert (post["name"], post["status"], post["head_sha"]) == ("E2E", "in_progress", SHA)
+    assert (post["name"], post["status"], post["head_sha"]) == ("E2E", "queued", SHA)
     assert "conclusion" not in post
     assert post["output"]["title"] == "Waiting for an approval: no approval yet"
     assert post["details_url"] == URL
 
 
-def test_the_claim_is_in_progress_and_writes_the_suite_lines_with_it() -> None:
+def test_the_claim_is_in_progress_and_the_suite_lines_it_writes_wait_for_a_runner() -> None:
     world = Checks()
     found = run_report(world, entry("start"))
     assert found.start
     assert {w["name"] for w in world.writes} == {"E2E", "E2E / VMaaS", "E2E / CaaS"}
-    assert all(w["status"] == "in_progress" for w in world.writes)
+    by_name = {w["name"]: w for w in world.writes}
+    assert by_name["E2E"]["status"] == "in_progress"  # started: a spinner
+    assert by_name["E2E / VMaaS"]["status"] == by_name["E2E / CaaS"]["status"] == "queued"  # not running yet: a dot
     assert world.newest("E2E")["output"]["title"] == "Running: vmaas, caas"
+
+
+def test_a_queued_line_reads_back_as_waiting_and_an_in_progress_one_as_running() -> None:
+    world = Checks()
+    run_report(world, entry("wait-approval"))
+    waiting = latest_check(world, REPO, SHA, "checks")
+    assert waiting is not None and waiting.phase is e2e_check.Phase.WAITING
+    run_report(world, entry("start"))
+    running = latest_check(world, REPO, SHA, "checks")
+    assert running is not None and running.phase is e2e_check.Phase.RUNNING and running.run_id == RUN
+
+
+def test_a_waiting_status_stays_pending_because_a_status_cannot_tell_the_two_apart() -> None:
+    from test_e2e_check import World as StatusWorld
+
+    world = StatusWorld()
+    post_status(world, REPO, SHA, "E2E", "waiting", "Waiting for an approval", "", "statuses")
+    assert world.writes[0]["state"] == "pending"
 
 
 def test_not_affected_is_a_completed_success() -> None:
@@ -195,6 +215,27 @@ def job(world: Checks, name: str, status: str) -> None:
     world.jobs.append(
         {"name": name, "status": status, "html_url": f"https://example.invalid/o/r/actions/runs/{RUN}/job/1"}
     )
+
+
+def test_a_suite_line_is_queued_until_its_job_has_a_runner_and_then_in_progress() -> None:
+    world = Checks()
+    job(world, "VMaaS / e2e-vmaas-full-install / e2e", "queued")
+    looks = {"n": 0}
+    real = world.request
+
+    def request(method: str, path: str, **kw: Any) -> Response:
+        if path.endswith("/jobs"):
+            looks["n"] += 1
+            if looks["n"] == 2:
+                world.jobs[0]["status"] = "in_progress"
+        return real(method, path, **kw)
+
+    world.request = request  # type: ignore[method-assign]
+    ticks = iter(range(100))
+    track(world, REPO, SHA, RUN, URL, ["vmaas"], interval=0, sleep=lambda _: None, clock=lambda: float(next(ticks)),
+          kind="checks")  # fmt: skip
+    assert [w["status"] for w in world.writes] == ["queued", "in_progress"]
+    assert [w["output"]["title"] for w in world.writes] == ["Waiting for a runner", "Running"]
 
 
 def test_track_and_settle_write_the_suite_lines_as_check_runs_and_leave_a_newer_runs_alone() -> None:
