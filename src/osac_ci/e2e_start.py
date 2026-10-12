@@ -20,12 +20,13 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable, Mapping, Sequence
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from enum import StrEnum
 from typing import Any
+from urllib.parse import quote
 
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
-from osac_ci.github.api import GitHubClient, check_repo, get, paginate
+from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
 from osac_ci.planner import latest_checks
@@ -34,7 +35,10 @@ from osac_ci.policy import Policy
 # Bots whose approval counts whatever their association with the repository: CodeRabbit, and the OSAC CI app, which
 # approves dependency updates that need no person (see ``bot_approve``).
 TRUSTED_BOTS = frozenset({"coderabbitai[bot]", "osac-ci[bot]"})
-WRITE_ASSOCIATIONS = frozenset({"OWNER", "MEMBER", "COLLABORATOR"})
+# What a person's approval needs, read from their EFFECTIVE permission on the repository, not from their association
+# with it: an organization member or a collaborator can have read or triage access only, and an approval starts a run
+# of the pull request's code with secrets.
+WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
 # A required check that says nothing about the quality of the change: the label check, the Jira reference check that
 # replaces it, and the E2E check itself (kept by ``e2e_check``; the E2E cannot wait for its own result). (The OSAC CI
 # check, a verdict on the others, is already left out by ``required_contexts``.)
@@ -59,6 +63,9 @@ class Review:
     association: str
     commit_id: str
     submitted_at: str = ""
+    permission: str = (
+        ""  # the reviewer's role on the repository (admin | maintain | write | triage | read | none), or ""
+    )
 
 
 @dataclass(frozen=True)
@@ -123,7 +130,9 @@ def _latest_reviews(reviews: Iterable[Review]) -> dict[str, Review]:
 def _qualifies(review: Review, author: str) -> bool:
     if review.user == author:
         return False
-    return review.user in TRUSTED_BOTS or review.association in WRITE_ASSOCIATIONS
+    if review.user in TRUSTED_BOTS:
+        return True
+    return review.permission in WRITE_PERMISSIONS
 
 
 def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[str, ...]]:
@@ -280,6 +289,9 @@ def fetch_inputs(
         for raw in paginate(client, f"{base}/pulls/{number}/reviews")
         if raw.get("user")
     )
+    author = str((pr.get("user") or {}).get("login", ""))
+    permissions = _permissions(client, repo, reviews, author)
+    reviews = tuple(replace(r, permission=permissions.get(r.user, "")) for r in reviews)
     runs = tuple(
         CheckRun(
             raw["name"],
@@ -314,6 +326,30 @@ def fetch_inputs(
         filters=policy.path_filters.filters,
         statuses=statuses,
     )
+
+
+def _permissions(client: GitHubClient, repo: str, reviews: Iterable[Review], author: str) -> dict[str, str]:
+    """The repository role of each person whose review could count (an approval or a request for changes), one request
+    each. A person who is not a collaborator has none. Bots that are trusted and the author are not asked about."""
+    people = sorted(
+        {
+            r.user
+            for r in reviews
+            if r.state in ("APPROVED", "CHANGES_REQUESTED") and r.user != author and r.user not in TRUSTED_BOTS
+        }
+    )
+    found: dict[str, str] = {}
+    for user in people:
+        response = client.request("GET", f"/repos/{repo}/collaborators/{quote(user, safe='')}/permission")
+        if response.status == 404:
+            found[user] = "none"
+        elif 200 <= response.status < 300 and isinstance(response.data, dict):
+            # the legacy field says whether the person can push (admin or write; a maintainer, or a custom role based on
+            # write, is "write"; triage is "read"); the role name is only a fallback
+            found[user] = str(response.data.get("permission") or response.data.get("role_name") or "none")
+        else:
+            raise GitHubError(response.status, f"reading the permission of {user}")
+    return found
 
 
 def _app_id(raw: dict[str, Any]) -> int:

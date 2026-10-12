@@ -87,6 +87,7 @@ def add_pr(
         else []
     )
     fake.add("GET", f"{BASE}/pulls/{number}/reviews", reviews)
+    fake.add("GET", f"{BASE}/collaborators/bob/permission", {"permission": "write", "role_name": "write"})
     fake.add("GET", f"{BASE}/pulls/{number}/files", [{"filename": f} for f in files])
     runs = [check("pre-commit")]
     if e2e == "running":

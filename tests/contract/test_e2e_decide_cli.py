@@ -41,6 +41,7 @@ def world(
     checks: tuple[dict[str, Any], ...] = (),
     required: tuple[str, ...] = ("pre-commit", "e2e-vmaas-gate", "check-labels", "jira-reference", "E2E", "OSAC CI"),
     pr: dict[str, Any] | None = None,
+    roles: dict[str, str] | None = None,
 ) -> FakeGitHub:
     fake = FakeGitHub()
     payload = {
@@ -54,6 +55,17 @@ def world(
     }
     fake.add("GET", f"{BASE}/pulls/7", payload)
     fake.add("GET", f"{BASE}/pulls/7/reviews", list(reviews))
+    # the role of each reviewer: by default the one their association suggests (a person the repository calls owner,
+    # member or collaborator has write access, anyone else is not a collaborator); a test can say otherwise
+    for raw in reviews:
+        if raw.get("user") is None:
+            continue
+        login = raw["user"]["login"]
+        role = (roles or {}).get(login)
+        if role is None and raw.get("author_association") in ("OWNER", "MEMBER", "COLLABORATOR"):
+            role = "write"
+        if role is not None:
+            fake.add("GET", f"{BASE}/collaborators/{login}/permission", {"permission": role, "role_name": role})
     fake.add("GET", f"{BASE}/pulls/7/files", [{"filename": f} for f in files])
     fake.add("GET", f"{BASE}/commits/{SHA}/check-runs", {"total_count": len(checks), "check_runs": list(checks)})
     fake.add("GET", f"{BASE}/branches/main", {"name": "main"})
@@ -111,6 +123,52 @@ def test_the_reviews_carry_the_association_and_the_commit() -> None:
     )
     d = decide(fetch_inputs(fake, POLICY, REPO, 7))
     assert d.action is Action.WAIT_APPROVAL and d.stale_approvals == ("carol",)
+
+
+def test_an_approval_counts_by_the_role_on_the_repository_not_by_the_association() -> None:
+    read_only = world(reviews=(approval("bob", "MEMBER"),), roles={"bob": "read"}, checks=(check("pre-commit"),))
+    assert decide(fetch_inputs(read_only, POLICY, REPO, 7)).action is Action.WAIT_APPROVAL
+    triage = world(reviews=(approval("bob", "COLLABORATOR"),), roles={"bob": "triage"}, checks=(check("pre-commit"),))
+    assert decide(fetch_inputs(triage, POLICY, REPO, 7)).action is Action.WAIT_APPROVAL
+    maintainer = world(
+        reviews=(approval("bob", "CONTRIBUTOR"),), roles={"bob": "maintain"}, checks=(check("pre-commit"),)
+    )
+    assert decide(fetch_inputs(maintainer, POLICY, REPO, 7)).action is Action.START
+
+
+def test_a_custom_role_that_can_push_counts_and_triage_does_not() -> None:
+    custom = world(reviews=(approval("bob", "CONTRIBUTOR"),), checks=(check("pre-commit"),))
+    custom.add("GET", f"{BASE}/collaborators/bob/permission", {"permission": "write", "role_name": "release-managers"})
+    assert decide(fetch_inputs(custom, POLICY, REPO, 7)).action is Action.START
+    triage = world(reviews=(approval("bob", "MEMBER"),), checks=(check("pre-commit"),))
+    triage.add("GET", f"{BASE}/collaborators/bob/permission", {"permission": "read", "role_name": "triage"})
+    assert decide(fetch_inputs(triage, POLICY, REPO, 7)).action is Action.WAIT_APPROVAL
+
+
+def test_a_reviewer_who_is_not_a_collaborator_has_no_role_and_does_not_count() -> None:
+    fake = world(reviews=(approval("bob", "MEMBER"),), checks=(check("pre-commit"),))
+    del fake.routes[("GET", f"{BASE}/collaborators/bob/permission")]  # GitHub answers 404
+    assert decide(fetch_inputs(fake, POLICY, REPO, 7)).action is Action.WAIT_APPROVAL
+
+
+def test_the_role_is_asked_once_per_person_and_not_for_trusted_bots_or_the_author() -> None:
+    fake = world(
+        reviews=(
+            approval("bob"), approval("bob", state="COMMENTED"), approval("coderabbitai[bot]", "NONE"),
+            approval("alice"), approval("dave", state="COMMENTED"),
+        ),
+        checks=(check("pre-commit"),),
+    )  # fmt: skip
+    fetch_inputs(fake, POLICY, REPO, 7)
+    asked = [p for (_, p) in fake.calls if "/collaborators/" in p]
+    assert asked == [f"{BASE}/collaborators/bob/permission"]
+
+
+def test_a_failure_to_read_a_role_is_an_error_and_never_an_approval() -> None:
+    fake = world(reviews=(approval("bob"),), checks=(check("pre-commit"),))
+    fake.routes[("GET", f"{BASE}/collaborators/bob/permission")] = (500, {"message": "boom"})
+    with pytest.raises(GitHubError):
+        fetch_inputs(fake, POLICY, REPO, 7)
 
 
 def test_a_review_from_a_deleted_account_is_ignored() -> None:

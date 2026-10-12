@@ -36,8 +36,12 @@ def run(name: str, conclusion: str | None = "success", app: int = APP) -> CheckR
     return CheckRun(name, "completed" if conclusion else "in_progress", conclusion, "2026-10-10T10:00:00Z", app_id=app)
 
 
-def review(user: str, state: str = "APPROVED", assoc: str = "MEMBER", commit: str = HEAD) -> Review:
-    return Review(user, state, assoc, commit)
+def review(
+    user: str, state: str = "APPROVED", assoc: str = "MEMBER", commit: str = HEAD, perm: str | None = None
+) -> Review:
+    # without an explicit role, a person the repository calls owner, member or collaborator has write access here
+    role = perm if perm is not None else ("write" if assoc in ("OWNER", "MEMBER", "COLLABORATOR") else "none")
+    return Review(user, state, assoc, commit, permission=role)
 
 
 def inputs(**changes: object) -> Inputs:
@@ -159,6 +163,24 @@ def test_coderabbit_counts_as_an_approver_whatever_its_association() -> None:
 @pytest.mark.parametrize("assoc", ["OWNER", "MEMBER", "COLLABORATOR"])
 def test_people_with_write_access_count(assoc: str) -> None:
     assert decide(inputs(reviews=(review("bob", assoc=assoc),))).starts
+
+
+@pytest.mark.parametrize("perm", ["admin", "maintain", "write"])
+def test_the_roles_with_write_access_count(perm: str) -> None:
+    assert decide(inputs(reviews=(review("bob", perm=perm),))).starts
+
+
+@pytest.mark.parametrize("perm", ["triage", "read", "none", ""])
+@pytest.mark.parametrize("assoc", ["OWNER", "MEMBER", "COLLABORATOR"])
+def test_an_association_without_write_access_does_not_count(assoc: str, perm: str) -> None:
+    # an organization member or a collaborator can have read or triage access only
+    d = decide(inputs(reviews=(review("bob", assoc=assoc, perm=perm),)))
+    assert d.action is Action.WAIT_APPROVAL
+
+
+def test_a_request_for_changes_from_someone_without_write_access_does_not_block() -> None:
+    d = decide(inputs(reviews=(review("bob"), review("carol", "CHANGES_REQUESTED", "MEMBER", perm="read"))))
+    assert d.starts
 
 
 @pytest.mark.parametrize("assoc", ["CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", "NONE", ""])
