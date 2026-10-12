@@ -870,9 +870,8 @@ this order:
 | `skip-not-applicable` | no E2E suite is affected by the changed files (docs only, osac-ui only), by the same path filters the workflows use today; a file list that is incomplete (the API stops at 3000) never skips a suite |
 | `blocked-changes-requested` | someone with write access has an unresolved request for changes (CodeRabbit's advice never blocks) |
 | `wait-approval` | nobody with write access (the repository role admin, maintain or write, read from the repository's own permission for that person, not from their association), and not CodeRabbit or the OSAC CI app (`osac-ci[bot]`, which approves dependency updates), has approved the head commit; the author cannot approve their own PR |
-| `blocked-cheap-checks-failed` | a cheap check failed (every required check except the E2E gates, `check-labels`, `jira-reference` and `E2E`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
-| `wait-cheap-checks` | a cheap check has not finished or has not reported |
-| `start` | none of the above; the suites to start are listed |
+| `blocked-cheap-checks-failed` | a cheap check has already failed (every required check except the E2E gates, `check-labels`, `jira-reference` and `E2E`); checked with the same meaning of "passed" as `compare`, including the app a check must come from and, for a requirement that names no app, a commit status of that name in the state success |
+| `start` | none of the above; the suites to start are listed. Cheap checks that are still running or have not reported do not delay it: the E2E runs in parallel with them (both must pass for the merge), and they are listed in the reason |
 
 A person's approval counts only when they can push to the repository: `GET /repos/{repo}/collaborators/{user}/permission` says `admin` or `write` (a maintainer or a custom role based on write is `write`; triage is `read`). Being an organization member or a collaborator is not enough, since either can have read or triage access only, and an approval starts a run of the pull request's code with secrets. The decision asks once per reviewer whose review could count; a reviewer who is not a collaborator has no role, and a failure to read a role is an error, never an approval. CodeRabbit and the OSAC CI app are the two bots that count without a role.
 
@@ -883,7 +882,7 @@ approved by a stale review. The summary also lists the E2E checks that are alrea
 current label-based flow did, so the two can be compared.
 
 `.github/actions/e2e-decide` runs it from another repository's workflow (a job summary plus a JSON file), pinned to a
-commit of osac-ci like the publish action. The workflow decides when: after the cheap workflows finish and after a review.
+commit of osac-ci like the publish action. The workflow decides when, and it never waits for the cheap workflows: it asks when a pull request gets a push (so the status says what it waits for), after a review, and when the pull request changes between draft and ready. The E2E starts as soon as the approval is there, in parallel with the cheap workflows.
 
 Besides `json-file` it has three outputs for a job that acts on the answer: `ready` (`true` only when exactly one pull
 request was evaluated and the answer is `start`; every other case, including no pull request found or several with the same
@@ -895,7 +894,7 @@ would start on `false`. A job that needs the list of pull requests reads the JSO
 
 ### Keeping the pull request's E2E status
 
-The full-install E2E starts from a workflow on the default branch, after the pull request is approved and CI has passed, so
+The full-install E2E starts from a workflow on the default branch, after the pull request is approved (CI runs in parallel and is not waited for), so
 its jobs are not on the pull request. A required check that has not reported blocks the merge without saying why. These two
 commands give the pull request ONE commit status named `E2E` and keep it up to date, from the first push to the result. It is
 a commit status and not a check run on purpose: the pull request page draws statuses, but not check runs that a workflow
@@ -912,7 +911,7 @@ reason in 140 characters; the link goes to the workflow run, whose job summary h
 
 | Answer | The status |
 |---|---|
-| `wait-approval`, `wait-cheap-checks`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
+| `wait-approval`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
 | `skip-not-applicable` | success, "Not affected by this change" |
 | `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only. The same step writes `E2E / <Suite>` as "Waiting for a runner" for each suite, so the lines appear together |
 | `skip-closed` | nothing |

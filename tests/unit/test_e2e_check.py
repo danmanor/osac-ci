@@ -180,7 +180,6 @@ def test_a_pull_request_with_no_status_gets_one_that_says_what_it_waits_for() ->
         ("wait-approval", "Waiting for an approval"),
         ("blocked-changes-requested", "Waiting: changes were requested"),
         ("blocked-cheap-checks-failed", "Waiting: CI failed"),
-        ("wait-cheap-checks", "Waiting for CI to finish"),
     ],
 )
 def test_every_waiting_answer_has_its_own_title(action: str, title: str) -> None:
@@ -204,7 +203,7 @@ def test_the_same_answer_twice_writes_nothing_the_second_time() -> None:
 
 def test_a_changed_reason_writes_a_newer_status_for_the_same_context() -> None:
     world = World()
-    run_report(world, entry("wait-cheap-checks", reason="CI: not reported yet"))
+    run_report(world, entry("skip-draft", reason="the pull request is a draft"))
     run_report(world, entry("blocked-cheap-checks-failed", reason="cheap checks failed: unit tests"))
     assert len(world.writes) == 2
     assert world.newest()["description"] == "Waiting: CI failed: cheap checks failed: unit tests"
@@ -301,7 +300,7 @@ def test_a_claim_another_run_overtook_writes_no_suite_lines() -> None:
 
 def test_start_turns_the_waiting_status_into_the_running_one() -> None:
     world = World()
-    run_report(world, entry("wait-cheap-checks"))
+    run_report(world, entry("wait-approval"))
     found = run_report(world, entry("start"))
     assert found.start and world.newest()["description"] != "" and len(e2e_writes(world)) == 2
     assert world.newest("E2E")["description"] == "Running: vmaas, caas"

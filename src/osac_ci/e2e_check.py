@@ -1,13 +1,14 @@
 """E2E status: the one required ``E2E`` status of a pull request, kept by a single workflow from the first push to the
 result.
 
-The full-install E2E starts from a workflow that runs on the default branch, after the pull request is approved on its
-latest commit and CI has passed. Its jobs are therefore not on the pull request, and a required check that has not
-reported blocks the merge without saying why. This module keeps ONE commit status named ``E2E`` on the pull request's
-head commit: what the E2E is waiting for, then that it is running, then how it ended (or that the change does not affect
-any suite). A commit status, not a check run: the pull request page lists statuses, but not check runs that a workflow
-writes through the API (they hang on an unrelated workflow's check group and are not drawn). The newest status of a
-context counts, so a status that was left behind never blocks a newer result, and nothing has to be patched.
+The full-install E2E starts from a workflow that runs on the default branch, after the pull request is approved on
+its latest commit (CI runs in parallel and is not waited for). Its jobs are therefore not on the pull request, and a
+required check that has not reported blocks the merge without saying why. This module keeps ONE commit status named
+``E2E`` on the pull request's head commit: what the E2E is waiting for, then that it is running, then how it ended (or
+that the change does not affect any suite). A commit status, not a check run: the pull request page lists statuses, but
+not check runs that a workflow writes through the API (they hang on an unrelated workflow's check group and are not
+drawn). The newest status of a context counts, so a status that was left behind never blocks a newer result, and
+nothing has to be patched.
 
 Two operations, both driven by the answer of ``e2e-decide`` (``e2e_start``):
 
@@ -52,7 +53,6 @@ WAITING_TITLES = {
     "wait-approval": "Waiting for an approval",
     "blocked-changes-requested": "Waiting: changes were requested",
     "blocked-cheap-checks-failed": "Waiting: CI failed",
-    "wait-cheap-checks": "Waiting for CI to finish",
 }
 
 
