@@ -285,10 +285,17 @@ def test_a_claim_replaces_the_suite_lines_an_earlier_attempt_left() -> None:
     assert world.newest("E2E / VMaaS Full Install")["description"] == "Waiting for a runner"
 
 
-def test_a_suite_with_no_line_of_its_own_gets_none_and_does_not_fail_the_claim() -> None:
+def test_a_decision_with_no_line_names_at_all_still_claims_and_writes_no_suite_lines() -> None:
     world = World()
-    found = run_report(world, entry("start", suites=["vmaas", "netris"]))
-    assert found.start and {w["context"] for w in world.writes} == {"E2E", "E2E / VMaaS Full Install"}
+    found = run_report(world, entry("start", suite_checks={}))
+    assert found.start and {w["context"] for w in world.writes} == {"E2E"}
+
+
+def test_a_suite_the_decision_gives_no_line_name_is_refused_before_anything_is_written() -> None:
+    world = World()
+    with pytest.raises(ValueError, match="no line name for: netris"):
+        run_report(world, entry("start", suites=["vmaas", "netris"]))
+    assert world.writes == []
 
 
 def test_the_lines_are_whatever_the_decision_names_so_a_new_suite_needs_no_change_here() -> None:

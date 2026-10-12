@@ -368,6 +368,10 @@ def report(
     sha = str(entry["head_sha"])
     # the lines of the suites that run, checked before anything is written
     wanted = validate_lines(entry.get("suite_checks") or {})
+    if wanted:
+        unnamed = [suite for suite in _suites(entry) if suite not in wanted]
+        if unnamed:
+            raise ValueError(f"the decision gives no line name for: {', '.join(unnamed)}")
     lines = tuple((suite, wanted[suite]) for suite in _suites(entry) if suite in wanted)
     existing = latest_check(client, repo, sha, kind)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
