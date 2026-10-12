@@ -40,7 +40,7 @@ def test_nothing_is_expanded_into_a_script_and_nothing_is_checked_out(path: Path
 
 def test_the_declared_outputs_are_the_ones_the_report_step_writes() -> None:
     declared = load(REPORT)["outputs"]
-    assert set(declared) == {"start", "sha", "state", "suites", "number"}
+    assert set(declared) == {"start", "sha", "state", "suites", "suite-checks", "number"}
     for name in declared:
         assert declared[name]["value"] == f"${{{{ steps.report.outputs.{name} }}}}"
 

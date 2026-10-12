@@ -1,7 +1,7 @@
 ---
-name: Show each E2E suite as a status on the pull request
+name: Show each E2E suite as a line on the pull request
 description: >-
-  Write a status named "E2E / <Suite>" on the pull request's head commit for each suite that is about to run, and keep it
+  Write a line (named by the E2E policy, such as "E2E / VMaaS Full Install") on the pull request's head commit for each suite that is about to run, and keep it
   current (waiting for a runner, running) with a link to the suite job's logs until every job has a runner. Run it as a
   job next to the suite jobs, in the same workflow run. Called from a workflow of the repository that runs on the default
   branch, pinned to a commit of osac-ci, like the other actions.
@@ -19,8 +19,10 @@ inputs:
   sha:
     description: The head commit the suites run for (the sha output of e2e-report)
     required: true
-  suites:
-    description: Comma-separated suites that run, such as vmaas,caas (from the suites output of e2e-report)
+  suite-checks:
+    description: >-
+      JSON object, suite id -> line name, of the suites that run (the suite-checks output of e2e-report; the names are
+      the "check" of each suite in the repository's E2E policy)
     required: true
   run-id:
     description: The workflow run that holds the suite jobs
@@ -49,7 +51,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ inputs.repo }}
         SHA: ${{ inputs.sha }}
-        SUITES: ${{ inputs.suites }}
+        SUITE_CHECKS: ${{ inputs.suite-checks }}
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
         TIMEOUT: ${{ inputs.timeout }}
@@ -65,4 +67,4 @@ runs:
         case "$RUN_ID" in "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;; esac
         case "$TIMEOUT" in "" | *[!0-9]*) echo "::error::The timeout must be digits only."; exit 1 ;; esac
         uv run --locked --project "$root" osac-ci e2e-suites-track --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" \
-          --run-url="$RUN_URL" --suites "$SUITES" --timeout "$TIMEOUT" --kind "$KIND"
+          --run-url="$RUN_URL" --suite-checks "$SUITE_CHECKS" --timeout "$TIMEOUT" --kind "$KIND"

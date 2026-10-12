@@ -334,6 +334,9 @@ def _parser() -> argparse.ArgumentParser:
     suites_cmd.add_argument(
         "--files-from", type=Path, required=True, help="a file with one changed path per line (as git diff --name-only)"
     )
+    suites_cmd.add_argument(
+        "--checks", action="store_true", help="print a JSON object, suite -> line name, instead of the list of suites"
+    )
 
     erep = sub.add_parser(
         "e2e-report",
@@ -361,25 +364,29 @@ def _parser() -> argparse.ArgumentParser:
 
     strack = sub.add_parser(
         "e2e-suites-track",
-        help="create the E2E / <Suite> checks on the pull request and keep them current until the jobs run",
+        help="create the suite lines on the pull request and keep them current until the jobs run",
     )
     strack.add_argument("--repo", required=True, help="owner/name")
     strack.add_argument("--sha", required=True, help="the head commit the suites run for")
     strack.add_argument("--run-id", type=int, required=True, help="the workflow run that holds the suite jobs")
     strack.add_argument("--run-url", default="")
-    strack.add_argument("--suites", required=True, help="comma-separated: vmaas,caas,bmaas")
+    strack.add_argument(
+        "--suite-checks", required=True, metavar="JSON", help="JSON object: suite id -> line name (from e2e-decide)"
+    )
     strack.add_argument("--timeout", type=float, default=7200, help="seconds to wait for the jobs to get a runner")
     strack.add_argument("--interval", type=float, default=30, help="seconds between looks")
     strack.add_argument(
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
 
-    ssettle = sub.add_parser("e2e-suites-settle", help="complete the E2E / <Suite> checks with the suite results")
+    ssettle = sub.add_parser("e2e-suites-settle", help="complete the suite lines with the result of each suite job")
     ssettle.add_argument("--repo", required=True, help="owner/name")
     ssettle.add_argument("--sha", required=True)
     ssettle.add_argument("--run-id", type=int, required=True)
     ssettle.add_argument("--run-url", default="")
-    ssettle.add_argument("--result", action="append", default=[], metavar="SUITE=RESULT", help="repeat per suite")
+    ssettle.add_argument(
+        "--suite-checks", required=True, metavar="JSON", help="JSON object: suite id -> line name (from e2e-decide)"
+    )
     ssettle.add_argument(
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
@@ -455,16 +462,16 @@ def _e2e_report(args: argparse.Namespace) -> int:
 def _e2e_suites(args: argparse.Namespace) -> int:
     try:
         if args.command == "e2e-suites-track":
-            suites = [s for s in args.suites.split(",") if s]
             ids = e2e_suites_check.track(
-                build_client(), args.repo, args.sha, args.run_id, args.run_url, suites,
+                build_client(), args.repo, args.sha, args.run_id, args.run_url,
+                e2e_suites_check.parse_lines(args.suite_checks),
                 timeout=args.timeout, interval=args.interval, kind=args.kind,
             )  # fmt: skip
         else:
-            results = e2e_suites_check.parse_results(args.result)
             ids = e2e_suites_check.settle(
-                build_client(), args.repo, args.sha, args.run_id, args.run_url, results, args.kind
-            )
+                build_client(), args.repo, args.sha, args.run_id, args.run_url,
+                e2e_suites_check.parse_lines(args.suite_checks), args.kind,
+            )  # fmt: skip
     except (GitHubError, KeyError, ValueError) as exc:
         print(f"error: {args.command} failed: {exc}", file=sys.stderr)
         return 3
@@ -541,7 +548,10 @@ def main(argv: list[str] | None = None) -> int:
         except (OSError, ValueError) as exc:
             print(f"error: cannot read {args.files_from}: {exc}", file=sys.stderr)
             return 3
-        print(json.dumps(list(e2e_start.suites_for_files(policy, names))))
+        if args.checks:
+            print(json.dumps(dict(e2e_start.suite_checks_for_files(policy, names))))
+        else:
+            print(json.dumps(list(e2e_start.suites_for_files(policy, names))))
         return 0
 
     if args.command == "report":

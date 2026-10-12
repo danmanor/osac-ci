@@ -1,54 +1,74 @@
-"""One status per E2E suite on the pull request, next to the single ``E2E`` status.
+"""One line per E2E suite on the pull request, next to the single ``E2E`` line.
 
 The suites run in a workflow of the default branch, so their jobs are not on the pull request. Each suite that runs
-gets a status named ``E2E / <Suite>`` on the pull request's head commit that follows its job: waiting for a runner,
-running, then the result, and its link goes straight to the job's logs. The required status stays ``E2E`` (see
-``e2e_check``); these are for the person looking at the pull request, who sees which suite is running or failed and
-gets to the log in one click. (Statuses, not check runs: the pull request page does not draw check runs a workflow
-writes through the API.)
+gets a line on the pull request's head commit that follows its job: waiting for a runner, running, then the result,
+with a link straight to the job's logs. The required line stays ``E2E`` (see ``e2e_check``); these are for the person
+looking at the pull request, who sees which suite is running or failed and gets to the log in one click.
 
-``track`` creates the statuses when the suites are about to start and keeps them current until every job has a runner.
-``settle`` completes them with the result of each suite job; the workflow must run it after ``track`` has ended (a job
-that needs the tracking job), or a late tracking write could reopen a finished suite. A status that belongs to a newer
-run is never overwritten. Only statuses of the GitHub Actions bot with these names are read. A suite that does not run
-has no status.
+Which suites exist, and what their lines are called, is the repository's policy and not this program's: the decision
+(``e2e_start``) carries, for each suite it picks, the ``check`` name of its job in the policy, and ``track`` and
+``settle`` take that mapping (suite id -> line name). A new suite is a policy entry and a workflow; nothing changes
+here. The job of a suite in the workflow run is found by its id: the calling job is named after the suite
+(``vmaas``), so the job that does the work is listed as ``vmaas / ... / e2e``.
+
+``track`` writes the lines when the suites are about to start and keeps them current until every job has a runner.
+``settle`` completes them with the result of each suite's job, read from the jobs of the run; the workflow must run
+it after ``track`` has ended (a job that needs the tracking job), or a late tracking write could reopen a finished
+suite. A line that belongs to a newer run is never overwritten. A suite that does not run has no line.
 """
 
 from __future__ import annotations
 
+import json
 import time
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
-from osac_ci.e2e_check import RESULTS, SUITE_LABELS, check_sha, newest_status, post_status, run_of_url, suite_context
+from osac_ci.e2e_check import check_sha, newest_status, post_status, run_of_url, validate_lines
 from osac_ci.github.api import GitHubClient, check_repo, paginate
-
-LABELS = SUITE_LABELS
-
-
-def context(suite: str) -> str:
-    return suite_context(suite)
 
 
 @dataclass(frozen=True)
 class Job:
     url: str
     status: str  # queued | in_progress | completed
+    conclusion: str = ""  # "" until completed
 
 
-def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: Sequence[str]) -> dict[str, Job]:
-    """The job of each suite in the workflow run. The workflow names the calling job after the suite ("VMaaS"), and
-    the called workflow's job is listed as "VMaaS / e2e-vmaas-full-install / e2e"."""
-    found: dict[str, Job] = {}
+def parse_lines(text: str) -> dict[str, str]:
+    """The suite -> line mapping, as the command line gives it: a JSON object."""
+    try:
+        raw = json.loads(text)
+    except ValueError as exc:
+        raise ValueError(f"the suite checks must be a JSON object: {exc}") from exc
+    return validate_lines(raw)
+
+
+def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -> dict[str, Job]:
+    """The job that does the work of each suite in the workflow run: of the jobs whose name is the suite's id or starts
+    with ``<id> / `` (the calling job and what it calls, one level per ``/``), the deepest one that did not get skipped.
+    A calling workflow can hold jobs for other suites that are skipped for this one; those do not count."""
+    best: dict[str, tuple[int, Job]] = {}
     jobs = paginate(
         client, f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/jobs", key="jobs", params={"filter": "latest"}
     )
     for job in jobs:
         name = str(job.get("name", ""))
+        if job.get("conclusion") == "skipped":
+            continue
         for suite in suites:
-            if suite not in found and name.startswith(f"{LABELS[suite]} / "):
-                found[suite] = Job(str(job.get("html_url", "")), str(job.get("status", "")))
-    return found
+            if name == suite or name.startswith(f"{suite} / "):
+                depth = name.count(" / ")
+                if suite not in best or depth > best[suite][0]:
+                    best[suite] = (
+                        depth,
+                        Job(
+                            str(job.get("html_url", "")),
+                            str(job.get("status", "")),
+                            str(job.get("conclusion") or ""),
+                        ),
+                    )
+    return {suite: job for suite, (_, job) in best.items()}
 
 
 def _state(job: Job | None) -> tuple[str, str]:
@@ -57,13 +77,20 @@ def _state(job: Job | None) -> tuple[str, str]:
     return "Running", "pending"
 
 
+def _result(job: Job | None) -> str:
+    """How a suite ended, from its job: success, failure or cancelled (also with no job, or when the run stopped)."""
+    if job is None or job.status != "completed":
+        return "cancelled"
+    return {"success": "success", "cancelled": "cancelled"}.get(job.conclusion, "failure")
+
+
 def track(
     client: GitHubClient,
     repo: str,
     sha: str,
     run_id: int,
     run_url: str,
-    suites: Sequence[str],
+    lines: Mapping[str, str],
     *,
     timeout: float = 7200,
     interval: float = 30,
@@ -71,10 +98,11 @@ def track(
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> list[str]:
-    """Write a status for each suite and update it until every suite's job is running (or the time is up). Returns the
-    suites it wrote a status for."""
+    """Write a line for each suite and update it until every suite's job is running (or the time is up). Returns the
+    suites it wrote a line for."""
     sha = check_sha(sha)
-    names = {suite: context(suite) for suite in suites}
+    lines = validate_lines(lines)
+    suites = list(lines)
     shown: dict[str, tuple[str, str]] = {}
     deadline = clock() + timeout
     while True:
@@ -85,7 +113,7 @@ def track(
             url = job.url if job else run_url
             if shown.get(suite) == (description, url):
                 continue
-            post_status(client, repo, sha, names[suite], state, description, url, kind)
+            post_status(client, repo, sha, lines[suite], state, description, url, kind)
             shown[suite] = (description, url)
         if all(s in jobs and jobs[s].status != "queued" for s in suites) or clock() >= deadline:
             return list(shown)
@@ -98,40 +126,24 @@ def settle(
     sha: str,
     run_id: int,
     run_url: str,
-    results: Mapping[str, str],
+    lines: Mapping[str, str],
     kind: str = "statuses",
 ) -> list[str]:
-    """Complete each suite's status with the result of its job. A status that belongs to a newer run is left alone
-    (the newest status of a name is what the page shows). Returns the suites it wrote."""
+    """Complete each suite's line with the result of its job. A line that belongs to a newer run is left alone (the
+    newest line of a name is what the page shows). Returns the suites it wrote."""
     sha = check_sha(sha)
-    for suite, result in results.items():
-        context(suite)
-        if result not in RESULTS:
-            raise ValueError(f"result of {suite} must be one of {', '.join(RESULTS)}, not {result!r}")
-    jobs = find_jobs(client, repo, run_id, list(results))
+    lines = validate_lines(lines)
+    jobs = find_jobs(client, repo, run_id, list(lines))
     written: list[str] = []
-    for suite, result in results.items():
-        name = context(suite)
+    for suite, name in lines.items():
         newest = newest_status(client, repo, sha, name, kind)
         owner = run_of_url(str(newest.get("target_url") or "")) if newest is not None else None
         if owner is not None and owner != run_id:
             continue
+        job = jobs.get(suite)
+        result = _result(job)
         title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
         state = {"success": "success", "failure": "failure", "cancelled": "error"}[result]
-        job = jobs.get(suite)
         post_status(client, repo, sha, name, state, title, job.url if job else run_url, kind)
         written.append(suite)
     return written
-
-
-def parse_results(items: Sequence[str]) -> dict[str, str]:
-    """``vmaas=success`` pairs, as the command line gives them."""
-    out: dict[str, str] = {}
-    for item in items:
-        suite, sep, result = item.partition("=")
-        if not sep:
-            raise ValueError(f"expected suite=result, got {item!r}")
-        if suite in out:
-            raise ValueError(f"suite {suite!r} is given more than once")
-        out[suite] = result
-    return out

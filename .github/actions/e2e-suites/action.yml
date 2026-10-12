@@ -20,6 +20,10 @@ outputs:
   suites:
     description: JSON list of the suites the change needs, such as ["vmaas","caas"] (an empty list when none)
     value: ${{ steps.suites.outputs.suites }}
+  suite-checks:
+    description: >-
+      JSON object, suite id -> line name on the pull request, of the same suites (the "check" of each in the policy)
+    value: ${{ steps.suites.outputs.suite-checks }}
 
 runs:
   using: composite
@@ -38,5 +42,7 @@ runs:
         set -euo pipefail
         root="$ACTION_PATH/../../.."
         suites=$(uv run --locked --project "$root" osac-ci e2e-suites --policy "$POLICY_FILE" --files-from "$FILES_FILE")
+        checks=$(uv run --locked --project "$root" osac-ci e2e-suites --policy "$POLICY_FILE" --files-from "$FILES_FILE" --checks)
         echo "suites=$suites" >> "$GITHUB_OUTPUT"
+        echo "suite-checks=$checks" >> "$GITHUB_OUTPUT"
         echo "E2E suites needed: $suites" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -1,7 +1,7 @@
 ---
 name: Record how each E2E suite ended on the pull request
 description: >-
-  Complete the "E2E / <Suite>" statuses written by e2e-suites-track with the result of each suite job (success, failure or
+  Complete the suite lines written by e2e-suites-track with the result of each suite job (success, failure or
   cancelled), each with a link to its job's logs. Run it as the last job of the workflow, whatever happened before. Called
   from a workflow of the repository that runs on the default branch, pinned to a commit of osac-ci, like the other
   actions.
@@ -20,8 +20,10 @@ inputs:
   sha:
     description: The head commit the suites ran for
     required: true
-  results:
-    description: Space-separated suite=result pairs, such as "vmaas=success caas=failure"; suites that did not run are left out
+  suite-checks:
+    description: >-
+      JSON object, suite id -> line name, of the suites that ran (the same value given to e2e-suites-track); each suite's
+      result is read from its job in the workflow run
     required: true
   run-id:
     description: The workflow run that holds the suite jobs
@@ -47,7 +49,7 @@ runs:
         GH_TOKEN: ${{ inputs.github-token }}
         REPO: ${{ inputs.repo }}
         SHA: ${{ inputs.sha }}
-        RESULTS: ${{ inputs.results }}
+        SUITE_CHECKS: ${{ inputs.suite-checks }}
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
         KIND: ${{ inputs.kind }}
@@ -60,8 +62,6 @@ runs:
           *) echo "::error::The kind must be statuses or checks."; exit 1 ;;
         esac
         case "$RUN_ID" in "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;; esac
-        args=()
-        for pair in $RESULTS; do args+=(--result "$pair"); done
-        if [ "${#args[@]}" -eq 0 ]; then echo "::notice::No suite result to record."; exit 0; fi
+        if [ -z "$SUITE_CHECKS" ] || [ "$SUITE_CHECKS" = "{}" ]; then echo "::notice::No suite line to settle."; exit 0; fi
         uv run --locked --project "$root" osac-ci e2e-suites-settle --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" \
-          --run-url="$RUN_URL" --kind "$KIND" "${args[@]}"
+          --run-url="$RUN_URL" --kind "$KIND" --suite-checks "$SUITE_CHECKS"

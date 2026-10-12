@@ -95,6 +95,7 @@ def entry(action: str = "wait-approval", **extra: Any) -> dict[str, Any]:
         "action": action,
         "reason": "no approval from a person with write access or CodeRabbit on the head commit",
         "suites": ["vmaas", "caas"],
+        "suite_checks": {"vmaas": "E2E / VMaaS Full Install", "caas": "E2E / CaaS Full Install"},
         "approvers": ["bob"],
     }
     base.update(extra)
@@ -272,22 +273,57 @@ def test_the_claim_writes_the_suite_lines_with_it_so_they_appear_together() -> N
     world = World()
     run_report(world, entry("start"))
     suites = {w["context"]: w for w in world.writes if w["context"] != "E2E"}
-    assert set(suites) == {"E2E / VMaaS", "E2E / CaaS"}
+    assert set(suites) == {"E2E / VMaaS Full Install", "E2E / CaaS Full Install"}
     assert all(w["state"] == "pending" and w["description"] == "Waiting for a runner" for w in suites.values())
     assert all(w["target_url"] == URL for w in suites.values())
 
 
 def test_a_claim_replaces_the_suite_lines_an_earlier_attempt_left() -> None:
     world = World()
-    world.add(context="E2E / VMaaS", state="error", description="Cancelled", target_url=URL)
+    world.add(context="E2E / VMaaS Full Install", state="error", description="Cancelled", target_url=URL)
     run_report(world, entry("start"))
-    assert world.newest("E2E / VMaaS")["description"] == "Waiting for a runner"
+    assert world.newest("E2E / VMaaS Full Install")["description"] == "Waiting for a runner"
 
 
 def test_a_suite_with_no_line_of_its_own_gets_none_and_does_not_fail_the_claim() -> None:
     world = World()
     found = run_report(world, entry("start", suites=["vmaas", "netris"]))
-    assert found.start and {w["context"] for w in world.writes} == {"E2E", "E2E / VMaaS"}
+    assert found.start and {w["context"] for w in world.writes} == {"E2E", "E2E / VMaaS Full Install"}
+
+
+def test_the_lines_are_whatever_the_decision_names_so_a_new_suite_needs_no_change_here() -> None:
+    world = World()
+    checks = {"vmaas": "E2E / VMaaS Full Install", "netris": "E2E / Netris Fabric"}
+    found = run_report(world, entry("start", suites=["vmaas", "netris"], suite_checks=checks))
+    assert dict(found.suite_checks) == checks
+    assert {w["context"] for w in world.writes} == {"E2E", *checks.values()}
+
+
+def test_a_suite_not_in_the_decision_gets_no_line_even_when_it_has_a_name() -> None:
+    world = World()
+    run_report(world, entry("start", suites=["vmaas"]))
+    assert {w["context"] for w in world.writes} == {"E2E", "E2E / VMaaS Full Install"}
+
+
+@pytest.mark.parametrize(
+    "checks",
+    [
+        {"vmaas": "E2E"},  # the required line itself
+        {"vmaas": ""},
+        {"vmaas": "x" * 101},
+        {"vmaas": "two\nlines"},
+        {"VMaaS": "E2E / VMaaS"},  # an id is a lower-case word
+        {"../x": "E2E / X"},
+        {"vmaas": "Same", "caas": "Same"},
+        {"vmaas": 3},
+        ["vmaas"],
+    ],
+)
+def test_suite_lines_that_are_not_plain_names_are_refused_before_anything_is_written(checks: object) -> None:
+    world = World()
+    with pytest.raises(ValueError, match="suite|line|E2E"):
+        run_report(world, entry("start", suite_checks=checks))
+    assert world.writes == []
 
 
 def test_waiting_and_not_affected_answers_write_no_suite_lines() -> None:
@@ -378,9 +414,9 @@ def test_the_newest_status_is_the_one_that_counts() -> None:
 
 def test_statuses_of_other_contexts_are_not_the_e2e() -> None:
     world = World()
-    world.add(context="E2E / VMaaS", state="success", description="Passed")
+    world.add(context="E2E / VMaaS Full Install", state="success", description="Passed")
     assert newest_status(world, REPO, SHA, "E2E") is None
-    assert newest_status(world, REPO, SHA, "E2E / VMaaS") is not None
+    assert newest_status(world, REPO, SHA, "E2E / VMaaS Full Install") is not None
 
 
 def test_nothing_is_written_unless_exactly_one_pull_request_was_decided() -> None:

@@ -74,6 +74,7 @@ def entry(action: str = "wait-approval", **extra: Any) -> dict[str, Any]:
         "action": action,
         "reason": "why",
         "suites": ["vmaas", "caas"],
+        "suite_checks": {"vmaas": "E2E / VMaaS Full Install", "caas": "E2E / CaaS Full Install"},
     }
     base.update(extra)
     return base
@@ -97,10 +98,12 @@ def test_the_claim_is_in_progress_and_the_suite_lines_it_writes_wait_for_a_runne
     world = Checks()
     found = run_report(world, entry("start"))
     assert found.start
-    assert {w["name"] for w in world.writes} == {"E2E", "E2E / VMaaS", "E2E / CaaS"}
+    assert {w["name"] for w in world.writes} == {"E2E", "E2E / VMaaS Full Install", "E2E / CaaS Full Install"}
     by_name = {w["name"]: w for w in world.writes}
     assert by_name["E2E"]["status"] == "in_progress"  # started: a spinner
-    assert by_name["E2E / VMaaS"]["status"] == by_name["E2E / CaaS"]["status"] == "queued"  # not running yet: a dot
+    assert (
+        by_name["E2E / VMaaS Full Install"]["status"] == by_name["E2E / CaaS Full Install"]["status"] == "queued"
+    )  # not running yet: a dot
     assert world.newest("E2E")["output"]["title"] == "Running: vmaas, caas"
 
 
@@ -211,15 +214,25 @@ def test_a_description_longer_than_a_title_is_cut_the_same_way() -> None:
     assert world.writes[0]["output"]["summary"].endswith(f"[Details]({URL})")
 
 
-def job(world: Checks, name: str, status: str) -> None:
+VM = "E2E / VMaaS Full Install"
+VM_LINE = {"vmaas": VM}
+
+
+def job(world: Checks, name: str, status: str, conclusion: str | None = None) -> None:
+    world.jobs = [j for j in world.jobs if j["name"] != name]
     world.jobs.append(
-        {"name": name, "status": status, "html_url": f"https://example.invalid/o/r/actions/runs/{RUN}/job/1"}
+        {
+            "name": name,
+            "status": status,
+            "conclusion": conclusion,
+            "html_url": f"https://example.invalid/o/r/actions/runs/{RUN}/job/1",
+        }
     )
 
 
 def test_a_suite_line_is_queued_until_its_job_has_a_runner_and_then_in_progress() -> None:
     world = Checks()
-    job(world, "VMaaS / e2e-vmaas-full-install / e2e", "queued")
+    job(world, "vmaas / e2e-vmaas-full-install / e2e", "queued")
     looks = {"n": 0}
     real = world.request
 
@@ -232,7 +245,7 @@ def test_a_suite_line_is_queued_until_its_job_has_a_runner_and_then_in_progress(
 
     world.request = request  # type: ignore[method-assign]
     ticks = iter(range(100))
-    track(world, REPO, SHA, RUN, URL, ["vmaas"], interval=0, sleep=lambda _: None, clock=lambda: float(next(ticks)),
+    track(world, REPO, SHA, RUN, URL, VM_LINE, interval=0, sleep=lambda _: None, clock=lambda: float(next(ticks)),
           kind="checks")  # fmt: skip
     assert [w["status"] for w in world.writes] == ["queued", "in_progress"]
     assert [w["output"]["title"] for w in world.writes] == ["Waiting for a runner", "Running"]
@@ -240,22 +253,28 @@ def test_a_suite_line_is_queued_until_its_job_has_a_runner_and_then_in_progress(
 
 def test_track_and_settle_write_the_suite_lines_as_check_runs_and_leave_a_newer_runs_alone() -> None:
     world = Checks()
-    job(world, "VMaaS / e2e-vmaas-full-install / e2e", "in_progress")
+    job(world, "vmaas / e2e-vmaas-full-install / e2e", "in_progress")
     ticks = iter(range(100))
-    track(world, REPO, SHA, RUN, URL, ["vmaas"], interval=0, sleep=lambda _: None, clock=lambda: float(next(ticks)),
+    track(world, REPO, SHA, RUN, URL, VM_LINE, interval=0, sleep=lambda _: None, clock=lambda: float(next(ticks)),
           kind="checks")  # fmt: skip
-    assert (world.newest("E2E / VMaaS")["status"], world.newest("E2E / VMaaS")["output"]["title"]) == (
+    assert (world.newest(VM)["status"], world.newest(VM)["output"]["title"]) == (
         "in_progress", "Running",
     )  # fmt: skip
-    assert settle(world, REPO, SHA, RUN, URL, {"vmaas": "failure"}, "checks") == ["vmaas"]
-    assert (world.newest("E2E / VMaaS")["status"], world.newest("E2E / VMaaS")["conclusion"]) == (
+    job(world, "vmaas / e2e-vmaas-full-install / e2e", "completed", "failure")
+    assert settle(world, REPO, SHA, RUN, URL, VM_LINE, "checks") == ["vmaas"]
+    assert (
+        world.newest(VM)["status"],
+        world.newest(VM)["conclusion"],
+    ) == (
         "completed",
         "failure",
     )
     world.add(
-        "E2E / CaaS", output={"title": "Running"}, details_url="https://example.invalid/o/r/actions/runs/501/job/9"
+        "E2E / CaaS Full Install",
+        output={"title": "Running"},
+        details_url="https://example.invalid/o/r/actions/runs/501/job/9",
     )
-    assert settle(world, REPO, SHA, RUN, URL, {"caas": "success"}, "checks") == []
+    assert settle(world, REPO, SHA, RUN, URL, {"caas": "E2E / CaaS Full Install"}, "checks") == []
 
 
 def test_existing_from_is_unchanged_for_statuses() -> None:

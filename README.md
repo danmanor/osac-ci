@@ -913,7 +913,7 @@ reason in 140 characters; the link goes to the workflow run, whose job summary h
 |---|---|
 | `wait-approval`, `blocked-cheap-checks-failed`, `blocked-changes-requested`, `skip-draft` | pending, "Waiting for an approval: <reason>" and the like. Written again only when the text changes |
 | `skip-not-applicable` | success, "Not affected by this change" |
-| `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only. The same step writes `E2E / <Suite>` as "Waiting for a runner" for each suite, so the lines appear together |
+| `start` | pending, "Running: <suites>", linked to the workflow run; the report answers `start=true` to that run only. The same step writes a line for each suite (named by the policy, see below) as "Waiting for a runner", so the lines appear together |
 | `skip-closed` | nothing |
 
 A commit gets its E2E once. A later `start` answer for the same commit starts nothing when another run is still going
@@ -929,7 +929,7 @@ requires the context `E2E` (a status carries no app, so the requirement names on
 
 #### Statuses or check runs (`kind`)
 
-All the E2E lines (`E2E` and `E2E / <Suite>`) can be written two ways, chosen by `--kind` (action input `kind`):
+All the E2E lines (`E2E` and the suite lines) can be written two ways, chosen by `--kind` (action input `kind`):
 
 | Kind | What it is | What the page shows |
 |---|---|---|
@@ -942,36 +942,50 @@ the app's own suite per commit, which the page always draws. So `checks` needs a
 `checks: write` (the OSAC CI app), and the merge rule can then require the check from that app only. The kind changes only
 where the lines go: the decisions, the claim and the newest-wins rule are the same.
 
-### One status per suite on the pull request
+### One line per suite on the pull request
 
 The suites run in a workflow of the default branch, so their jobs are not listed on the pull request. Two commands put a
-status named `E2E / VMaaS` (or `CaaS`, `BMaaS`) on the pull request's head commit for each suite that runs, so the person
-looking at the pull request sees which suite is running or failed, and its "Details" link goes straight to that suite's job
-logs:
+line on the pull request's head commit for each suite that runs, so the person looking at the pull request sees which suite
+is running or failed, and its "Details" link goes straight to that suite's job logs.
+
+Which suites exist, and what their lines are called, is the repository's policy, not this program's. Each E2E job of the
+policy has a `check:` name (`E2E / VMaaS Full Install`, `E2E / Netris Fabric`, ...) and `filters`, which say when the suite
+runs (a suite for a rarely touched area simply has narrower filters, and a change that does not match them gets no line for
+it). `e2e-decide` puts the name of each suite it picks in its answer (`suite_checks`: suite id -> line name, the
+`suite-checks` output of `e2e-report`), and the commands below take that object. A new suite is a policy entry and a
+workflow job named after the suite; nothing changes here. The name must be one short printable line, unique among the
+suites, and never `E2E` itself (the required line).
 
 ```bash
-GH_TOKEN=... uv run osac-ci e2e-suites-track --repo osac-project/osac --sha SHA --run-id 123 --suites vmaas,caas
-GH_TOKEN=... uv run osac-ci e2e-suites-settle --repo osac-project/osac --sha SHA --run-id 123 --result vmaas=success --result caas=failure
+GH_TOKEN=... uv run osac-ci e2e-suites-track --repo osac-project/osac --sha SHA --run-id 123 \
+  --suite-checks '{"vmaas":"E2E / VMaaS Full Install","caas":"E2E / CaaS Full Install"}'
+GH_TOKEN=... uv run osac-ci e2e-suites-settle --repo osac-project/osac --sha SHA --run-id 123 \
+  --suite-checks '{"vmaas":"E2E / VMaaS Full Install","caas":"E2E / CaaS Full Install"}'
 ```
 
-`e2e-suites-track` runs next to the suite jobs: it writes "Waiting for a runner" while a suite's job is queued, "Running" once
-it has a runner, links the job, and ends when every job runs (or after `--timeout`). `e2e-suites-settle` runs last, in a job
-that needs the tracking job, whatever happened, and writes each suite's result ("Passed", "Failed", "Cancelled"). It leaves a
-status that belongs to a newer run alone. A suite that does not run has no status. These are for people: the required status
-stays `E2E`. Actions: `e2e-suites-track` (inputs `suites`, `sha`, `run-id`) and `e2e-suites-settle` (input `results`, such as
-`vmaas=success caas=failure`). The token needs `statuses: write` and `actions: read`.
+The job of a suite in the workflow run is found by the suite id: the calling job is named after the suite (`vmaas`), so the
+job that does the work is listed as `vmaas / ... / e2e`; of the jobs under that name the deepest one that was not skipped
+counts. `e2e-suites-track` runs next to the suite jobs: it writes "Waiting for a runner" while a suite's job is queued,
+"Running" once it has a runner, links the job, and ends when every job runs (or after `--timeout`). `e2e-suites-settle` runs
+last, in a job that needs the tracking job, whatever happened, and reads each suite's result from its job ("Passed",
+"Failed", "Cancelled"; a suite with no job, or whose run stopped, is "Cancelled"), so the workflow passes no results. It
+leaves a line that belongs to a newer run alone. A suite that does not run has no line. These are for people: the required
+line stays `E2E`. Actions: `e2e-suites-track` and `e2e-suites-settle` (input `suite-checks`, plus `sha`, `run-id`, `kind`).
+The token needs `actions: read` and the permission of the chosen `kind` (`statuses: write`, or an app token with
+`checks: write`).
 
 ### Which suites a change needs, without a pull request
 
 ```bash
 git diff --name-only BASE HEAD > files
 uv run osac-ci e2e-suites --policy .github/e2e-policy.yml --files-from files    # ["vmaas","caas"]
+uv run osac-ci e2e-suites --policy .github/e2e-policy.yml --files-from files --checks    # {"vmaas": "E2E / VMaaS Full Install", ...}
 ```
 
 A merge queue entry has no pull request to ask, but it needs the same answer: which suites does this change touch. `e2e-suites`
 applies the E2E jobs of a policy to a list of changed files with the rules `e2e-decide` uses, and prints the suite names as
 JSON. An empty list of files means nothing is known, so no suite is skipped. `.github/actions/e2e-suites` runs it from a
-workflow (input `policy-file` and `files-file`, output `suites`). `e2e-decide` takes the same kind of policy through its
+workflow (input `policy-file` and `files-file`, outputs `suites` and `suite-checks`). `e2e-decide` takes the same kind of policy through its
 `policy-file` input, so a repository keeps its E2E policy next to its path filters and nothing is copied here.
 
 ### Comparing the E2E decision with what the current flow did

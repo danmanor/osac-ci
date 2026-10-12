@@ -52,7 +52,8 @@ STATES = ("pending", "success", "failure", "error")  # what GitHub accepts for a
 # waiting status is pending like a running one.
 WRITE_STATES = (*STATES, "waiting")
 RUN_IN_URL = re.compile(r"/actions/runs/(\d+)")
-SUITE_LABELS = {"vmaas": "VMaaS", "caas": "CaaS", "bmaas": "BMaaS"}  # the suites that have a line of their own
+SUITE_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,39}")  # a suite id: it ends up in job names, so no spaces or slashes
+LINE_MAX = 100  # the longest name a suite line may have
 
 WAITING_TITLES = {
     "skip-draft": "Waiting: the pull request is a draft",
@@ -114,13 +115,27 @@ class Report:
     start: bool
     suites: tuple[str, ...]
     note: str
+    suite_checks: tuple[tuple[str, str], ...] = ()  # (suite, line name) of the suites that run, from the policy
 
 
-def suite_context(suite: str) -> str:
-    """The status of one suite, next to ``E2E``: ``E2E / VMaaS``."""
-    if suite not in SUITE_LABELS:
-        raise ValueError(f"unknown suite {suite!r}; expected one of {', '.join(SUITE_LABELS)}")
-    return f"{CONTEXT} / {SUITE_LABELS[suite]}"
+def validate_lines(raw: object) -> dict[str, str]:
+    """The suite id -> line name mapping the decision carries (from the ``check`` of each suite's job in the policy). It
+    is read from data, so each part is checked: an id is a short lower-case word (it names a job), a line name is one
+    short line of printable text, and none may be ``E2E`` itself, the required line that no suite may overwrite."""
+    if not isinstance(raw, Mapping):
+        raise ValueError("the suite checks must be an object of suite id to line name")
+    out: dict[str, str] = {}
+    for suite, line in raw.items():
+        if not isinstance(suite, str) or not SUITE_ID.fullmatch(suite):
+            raise ValueError(f"invalid suite id: {suite!r}")
+        if not isinstance(line, str) or not line.strip() or len(line) > LINE_MAX or not line.isprintable():
+            raise ValueError(f"invalid line name for {suite}: {line!r}")
+        if line.strip() == CONTEXT:
+            raise ValueError(f"the line of {suite} cannot be named {CONTEXT}: that is the required line")
+        out[suite] = line.strip()
+    if len(set(out.values())) != len(out):
+        raise ValueError("two suites have the same line name")
+    return out
 
 
 def describe(text: str) -> str:
@@ -351,6 +366,9 @@ def report(
         return Report("", None, "ignored", False, (), note)
     entry = entries[0]
     sha = str(entry["head_sha"])
+    # the lines of the suites that run, checked before anything is written
+    wanted = validate_lines(entry.get("suite_checks") or {})
+    lines = tuple((suite, wanted[suite]) for suite in _suites(entry) if suite in wanted)
     existing = latest_check(client, repo, sha, kind)
     outcome = plan(entry, existing, run_id, lambda rid: run_is_alive(client, repo, rid))
     for write in outcome.writes:
@@ -366,10 +384,9 @@ def report(
             return Report(sha, number, "already-running", False, _suites(entry), f"{other} claimed the E2E first")
         # The suite lines appear together with E2E, not a job start later (and replace a result left by an earlier
         # attempt of this run). The tracking job keeps them current from here on.
-        for suite in _suites(entry):
-            if suite in SUITE_LABELS:
-                post_status(client, repo, sha, suite_context(suite), "waiting", "Waiting for a runner", run_url, kind)
-    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note)
+        for _suite, line in lines:
+            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, kind)
+    return Report(sha, number, outcome.state, outcome.start, _suites(entry), outcome.note, lines)
 
 
 def finish(
@@ -406,6 +423,7 @@ def to_json(found: Report) -> str:
             "state": found.state,
             "start": found.start,
             "suites": list(found.suites),
+            "suite_checks": dict(found.suite_checks),
             "note": found.note,
         },
         indent=2,

@@ -112,6 +112,9 @@ class Decision:
     cheap_failed: tuple[str, ...] = ()
     cheap_pending: tuple[str, ...] = ()
     e2e_checks: tuple[str, ...] = ()  # E2E checks already on the head commit, "name: state" (what the other flow did)
+    # (suite, line) for each suite listed in ``suites``: the name of the line the suite gets on the pull request, from
+    # the ``check`` of its job in the policy, so a new suite needs no change here
+    suite_checks: tuple[tuple[str, str], ...] = ()
 
     @property
     def starts(self) -> bool:
@@ -164,13 +167,17 @@ def _needed(suites: Iterable[Suite], files: Sequence[str], filters: Mapping[str,
     return tuple(s for s in suites if filters_hold(files, filters, s.filters, s.filters_any))
 
 
-def suites_for_files(policy: Policy, files: Sequence[str]) -> tuple[str, ...]:
-    """The names of the suites a change to these files needs, by the same rule a pull request is judged by. No files
-    means nothing is known, so no suite is skipped."""
+def suite_checks_for_files(policy: Policy, files: Sequence[str]) -> tuple[tuple[str, str], ...]:
+    """The suites a change to these files needs, by the same rule a pull request is judged by, each with the name of
+    its line on the pull request. No files means nothing is known, so no suite is skipped."""
     suites = suites_of(policy)
-    if not files:
-        return tuple(s.name for s in suites)
-    return tuple(s.name for s in _needed(suites, files, policy.path_filters.filters))
+    needed = suites if not files else _needed(suites, files, policy.path_filters.filters)
+    return tuple((s.name, s.check) for s in needed)
+
+
+def suites_for_files(policy: Policy, files: Sequence[str]) -> tuple[str, ...]:
+    """The names of the suites a change to these files needs (see ``suite_checks_for_files``)."""
+    return tuple(name for name, _ in suite_checks_for_files(policy, files))
 
 
 def _e2e_checks(inputs: Inputs) -> tuple[str, ...]:
@@ -211,11 +218,13 @@ def decide(inputs: Inputs) -> Decision:
             **base,
         )
     names = tuple(s.name for s in needed)
+    checks = tuple((s.name, s.check) for s in needed)
     if blocking:
         return Decision(
             action=Action.BLOCKED_CHANGES_REQUESTED,
             reason=f"changes requested by {', '.join(blocking)}",
             suites=names,
+            suite_checks=checks,
             **base,
         )
     if not approvers:
@@ -224,6 +233,7 @@ def decide(inputs: Inputs) -> Decision:
             action=Action.WAIT_APPROVAL,
             reason=f"no approval from a person with write access or CodeRabbit on the head commit{extra}",
             suites=names,
+            suite_checks=checks,
             **base,
         )
     if failed:
@@ -231,6 +241,7 @@ def decide(inputs: Inputs) -> Decision:
             action=Action.BLOCKED_CHEAP_FAILED,
             reason=f"cheap checks failed: {', '.join(g.split(':')[0] for g in failed)}",
             suites=names,
+            suite_checks=checks,
             **base,
         )
     return Decision(
@@ -238,6 +249,7 @@ def decide(inputs: Inputs) -> Decision:
         reason=f"approved by {', '.join(approvers)}"
         + (f"; CI still running: {', '.join(g.split(':')[0] for g in pending)}" if pending else ""),
         suites=names,
+        suite_checks=checks,
         **base,
     )
 
@@ -388,6 +400,7 @@ def to_json(decision: Decision) -> str:
             "action": decision.action.value,
             "reason": decision.reason,
             "suites": list(decision.suites),
+            "suite_checks": dict(decision.suite_checks),
             "approvers": list(decision.approvers),
             "stale_approvals": list(decision.stale_approvals),
             "changes_requested_by": list(decision.changes_requested_by),

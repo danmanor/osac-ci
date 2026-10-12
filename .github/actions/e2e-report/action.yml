@@ -50,6 +50,11 @@ outputs:
   suites:
     description: JSON list of the suites the change affects, such as ["vmaas","caas"]
     value: ${{ steps.report.outputs.suites }}
+  suite-checks:
+    description: >-
+      JSON object, suite id -> line name on the pull request, of the suites the change affects (the "check" of each
+      suite in the policy); pass it to e2e-suites-track and e2e-suites-settle
+    value: ${{ steps.report.outputs.suite-checks }}
   number:
     description: Number of the pull request (empty when nothing was reported)
     value: ${{ steps.report.outputs.number }}
@@ -89,6 +94,7 @@ runs:
             echo "sha="
             echo "state=ignored"
             echo "suites=[]"
+            echo "suite-checks={}"
             echo "number="
           } >> "$GITHUB_OUTPUT"
           exit 0
@@ -102,5 +108,6 @@ runs:
           echo "sha=$(jq -r '.sha' "$json")"
           echo "state=$(jq -r '.state' "$json")"
           echo "suites=$(jq -c '.suites' "$json")"
+          echo "suite-checks=$(jq -c '.suite_checks // {}' "$json")"
           echo "number=$(jq -r '.number // empty' "$json")"
         } >> "$GITHUB_OUTPUT"

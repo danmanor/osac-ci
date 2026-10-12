@@ -152,6 +152,20 @@ def test_unknown_changed_files_never_skip_a_suite() -> None:
     assert applicable_suites(inputs(changed_files=("docs/a.md",), changed_files_known=False)) == SUITES
 
 
+def test_the_decision_names_the_line_of_each_suite_that_runs_from_the_policy() -> None:
+    d = decide(inputs(changed_files=("caas/x.txt",)))
+    assert d.suite_checks == (("caas", "e2e-caas-gate"),)
+    d = decide(inputs())
+    assert d.suite_checks == (("vmaas", "e2e-vmaas-gate"), ("caas", "e2e-caas-gate"))
+
+
+def test_the_decision_json_carries_the_lines_as_an_object() -> None:
+    import json
+
+    data = json.loads(to_json(decide(inputs(changed_files=("caas/x.txt",)))))
+    assert data["suite_checks"] == {"caas": "e2e-caas-gate"}
+
+
 # approvals ------------------------------------------------------------------------------------------------------
 
 

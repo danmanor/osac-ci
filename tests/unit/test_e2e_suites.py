@@ -57,6 +57,16 @@ def test_the_command_prints_the_suites_as_json(tmp_path: Path, capsys: pytest.Ca
     assert json.loads(capsys.readouterr().out) == ["caas"]
 
 
+def test_the_checks_flag_prints_each_needed_suite_with_the_name_of_its_line(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    (tmp_path / "policy.yml").write_text(POLICY_TEXT, encoding="utf-8")
+    (tmp_path / "files").write_text("tests/e2e/caas/test_a.py\n", encoding="utf-8")
+    argv = ["e2e-suites", "--policy", str(tmp_path / "policy.yml"), "--files-from", str(tmp_path / "files"), "--checks"]
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out) == {"caas": "e2e-caas"}
+
+
 def test_a_file_list_that_cannot_be_read_is_an_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     (tmp_path / "policy.yml").write_text(POLICY_TEXT, encoding="utf-8")
     argv = ["e2e-suites", "--policy", str(tmp_path / "policy.yml"), "--files-from", str(tmp_path / "missing")]
@@ -88,7 +98,13 @@ def test_the_action_passes_both_files_to_the_command_and_sets_the_output(tmp_pat
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
     uv = bin_dir / "uv"
-    uv.write_text(f"#!/bin/bash\necho \"$@\" >> '{tmp_path}/uv-args'\necho '[\"vmaas\"]'\n")
+    script = (
+        "#!/bin/bash\n"
+        f"echo \"$@\" >> '{tmp_path}/uv-args'\n"
+        'if [[ "$*" == *--checks* ]]; then echo \'{"vmaas": "E2E / VMaaS Full Install"}\'; '
+        "else echo '[\"vmaas\"]'; fi\n"
+    )
+    uv.write_text(script)
     uv.chmod(uv.stat().st_mode | stat.S_IEXEC)
     step = next(s["run"] for s in action()["runs"]["steps"] if s.get("name") == "List the suites")
     out = tmp_path / "output"
@@ -99,4 +115,4 @@ def test_the_action_passes_both_files_to_the_command_and_sets_the_output(tmp_pat
     done = subprocess.run(["bash", "-c", step], env=env, capture_output=True, text=True, check=False)
     assert done.returncode == 0, done.stderr
     assert "e2e-suites --policy /w/p.yml --files-from /w/files" in (tmp_path / "uv-args").read_text()
-    assert out.read_text().strip() == 'suites=["vmaas"]'
+    assert out.read_text().splitlines() == ['suites=["vmaas"]', 'suite-checks={"vmaas": "E2E / VMaaS Full Install"}']
