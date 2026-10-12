@@ -164,6 +164,23 @@ def test_the_role_is_asked_once_per_person_and_not_for_trusted_bots_or_the_autho
     assert asked == [f"{BASE}/collaborators/bob/permission"]
 
 
+def test_the_role_of_someone_whose_latest_review_was_dismissed_is_not_asked() -> None:
+    fake = world(
+        reviews=(approval("bob"), approval("carol"), approval("carol", state="DISMISSED")),
+        checks=(check("pre-commit"),),
+    )
+    fetch_inputs(fake, POLICY, REPO, 7)
+    asked = [p for (_, p) in fake.calls if "/collaborators/" in p]
+    assert asked == [f"{BASE}/collaborators/bob/permission"]
+
+
+def test_a_role_that_cannot_be_read_for_someone_whose_review_no_longer_counts_is_not_an_error() -> None:
+    fake = world(reviews=(approval("bob"), approval("carol"), approval("carol", state="DISMISSED")),
+                 checks=(check("pre-commit"),))  # fmt: skip
+    fake.routes[("GET", f"{BASE}/collaborators/carol/permission")] = (500, {"message": "boom"})
+    assert decide(fetch_inputs(fake, POLICY, REPO, 7)).action is Action.START
+
+
 def test_a_failure_to_read_a_role_is_an_error_and_never_an_approval() -> None:
     fake = world(reviews=(approval("bob"),), checks=(check("pre-commit"),))
     fake.routes[("GET", f"{BASE}/collaborators/bob/permission")] = (500, {"message": "boom"})

@@ -329,12 +329,13 @@ def fetch_inputs(
 
 
 def _permissions(client: GitHubClient, repo: str, reviews: Iterable[Review], author: str) -> dict[str, str]:
-    """The repository role of each person whose review could count (an approval or a request for changes), one request
-    each. A person who is not a collaborator has none. Bots that are trusted and the author are not asked about."""
+    """The repository role of each person whose latest review could count (an approval or a request for changes), one
+    request each. A person who is not a collaborator has none. Trusted bots and the author are not asked about."""
+    # only the latest review of each person counts (a dismissed one is no decision), as in ``approvals``
     people = sorted(
         {
             r.user
-            for r in reviews
+            for r in _latest_reviews(reviews).values()
             if r.state in ("APPROVED", "CHANGES_REQUESTED") and r.user != author and r.user not in TRUSTED_BOTS
         }
     )
