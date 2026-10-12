@@ -97,10 +97,12 @@ def test_the_claim_is_in_progress_and_the_suite_lines_it_writes_wait_for_a_runne
     world = Checks()
     found = run_report(world, entry("start"))
     assert found.start
-    assert {w["name"] for w in world.writes} == {"E2E", "E2E / VMaaS", "E2E / CaaS"}
+    assert {w["name"] for w in world.writes} == {"E2E", "E2E / VMaaS Full Install", "E2E / CaaS Full Install"}
     by_name = {w["name"]: w for w in world.writes}
     assert by_name["E2E"]["status"] == "in_progress"  # started: a spinner
-    assert by_name["E2E / VMaaS"]["status"] == by_name["E2E / CaaS"]["status"] == "queued"  # not running yet: a dot
+    assert (
+        by_name["E2E / VMaaS Full Install"]["status"] == by_name["E2E / CaaS Full Install"]["status"] == "queued"
+    )  # not running yet: a dot
     assert world.newest("E2E")["output"]["title"] == "Running: vmaas, caas"
 
 
@@ -244,16 +246,20 @@ def test_track_and_settle_write_the_suite_lines_as_check_runs_and_leave_a_newer_
     ticks = iter(range(100))
     track(world, REPO, SHA, RUN, URL, ["vmaas"], interval=0, sleep=lambda _: None, clock=lambda: float(next(ticks)),
           kind="checks")  # fmt: skip
-    assert (world.newest("E2E / VMaaS")["status"], world.newest("E2E / VMaaS")["output"]["title"]) == (
-        "in_progress", "Running",
-    )  # fmt: skip
+    line = world.newest("E2E / VMaaS Full Install")
+    assert (line["status"], line["output"]["title"]) == ("in_progress", "Running")
     assert settle(world, REPO, SHA, RUN, URL, {"vmaas": "failure"}, "checks") == ["vmaas"]
-    assert (world.newest("E2E / VMaaS")["status"], world.newest("E2E / VMaaS")["conclusion"]) == (
+    assert (
+        world.newest("E2E / VMaaS Full Install")["status"],
+        world.newest("E2E / VMaaS Full Install")["conclusion"],
+    ) == (
         "completed",
         "failure",
     )
     world.add(
-        "E2E / CaaS", output={"title": "Running"}, details_url="https://example.invalid/o/r/actions/runs/501/job/9"
+        "E2E / CaaS Full Install",
+        output={"title": "Running"},
+        details_url="https://example.invalid/o/r/actions/runs/501/job/9",
     )
     assert settle(world, REPO, SHA, RUN, URL, {"caas": "success"}, "checks") == []
 

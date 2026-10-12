@@ -117,10 +117,11 @@ class Report:
 
 
 def suite_context(suite: str) -> str:
-    """The status of one suite, next to ``E2E``: ``E2E / VMaaS``."""
+    """The line of one suite, next to ``E2E``: ``E2E / VMaaS Full Install``. (The job of the suite in the workflow keeps
+    the short label, which is how its job is found.)"""
     if suite not in SUITE_LABELS:
         raise ValueError(f"unknown suite {suite!r}; expected one of {', '.join(SUITE_LABELS)}")
-    return f"{CONTEXT} / {SUITE_LABELS[suite]}"
+    return f"{CONTEXT} / {SUITE_LABELS[suite]} Full Install"
 
 
 def describe(text: str) -> str:

@@ -50,7 +50,7 @@ class SuiteWorld(World):
         return super().request(method, path, params=params, body=body)
 
     def suite(self, name: str) -> dict[str, Any]:
-        return self.newest(f"E2E / {name}")
+        return self.newest(f"E2E / {name} Full Install")
 
 
 def fast(world: SuiteWorld, suites: list[str], **kw: Any) -> list[str]:
@@ -63,7 +63,7 @@ def fast(world: SuiteWorld, suites: list[str], **kw: Any) -> list[str]:
 
 
 def test_contexts_are_the_suite_labels_and_unknown_suites_are_refused() -> None:
-    assert context("vmaas") == "E2E / VMaaS" and context("bmaas") == "E2E / BMaaS"
+    assert context("vmaas") == "E2E / VMaaS Full Install" and context("bmaas") == "E2E / BMaaS Full Install"
     with pytest.raises(ValueError, match="unknown suite"):
         context("netris")
 
@@ -107,7 +107,7 @@ def test_the_status_turns_to_running_when_the_job_gets_a_runner_and_the_tracking
     assert wrote == ["vmaas", "caas"]
     # the CaaS status was written once, VMaaS twice (waiting, then running)
     contexts = [w["context"] for w in world.writes]
-    assert contexts.count("E2E / CaaS") == 1 and contexts.count("E2E / VMaaS") == 2
+    assert contexts.count("E2E / CaaS Full Install") == 1 and contexts.count("E2E / VMaaS Full Install") == 2
 
 
 def test_nothing_is_written_again_when_nothing_changed() -> None:
@@ -136,7 +136,7 @@ def test_a_suite_that_does_not_run_gets_no_status() -> None:
     world = SuiteWorld()
     world.job("VMaaS / e2e-vmaas-full-install / e2e", "in_progress")
     fast(world, ["vmaas"])
-    assert {s["context"] for s in world.statuses} == {"E2E / VMaaS"}
+    assert {s["context"] for s in world.statuses} == {"E2E / VMaaS Full Install"}
 
 
 def test_settle_writes_the_result_with_a_link_to_the_job_logs() -> None:
@@ -160,14 +160,14 @@ def test_settle_without_a_status_writes_one_that_links_the_workflow_run() -> Non
 
 def test_settle_never_overwrites_the_status_of_a_newer_run() -> None:
     world = SuiteWorld()
-    world.add(context="E2E / VMaaS", state="pending", description="Running", target_url=NEWER_RUN_URL)
+    world.add(context="E2E / VMaaS Full Install", state="pending", description="Running", target_url=NEWER_RUN_URL)
     wrote = settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "failure", "caas": "success"})
     assert wrote == ["caas"] and world.suite("VMaaS")["description"] == "Running"
 
 
 def test_settle_replaces_the_status_its_own_run_wrote() -> None:
     world = SuiteWorld()
-    world.add(context="E2E / VMaaS", state="pending", description="Running", target_url=RUN_URL + "/job/1")
+    world.add(context="E2E / VMaaS Full Install", state="pending", description="Running", target_url=RUN_URL + "/job/1")
     assert settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"}) == ["vmaas"]
     assert world.suite("VMaaS")["state"] == "success"
 
@@ -175,7 +175,11 @@ def test_settle_replaces_the_status_its_own_run_wrote() -> None:
 def test_settle_ignores_a_status_a_person_wrote_for_the_decision() -> None:
     world = SuiteWorld()
     world.add(
-        context="E2E / VMaaS", state="pending", description="x", target_url=NEWER_RUN_URL, creator={"login": "me"}
+        context="E2E / VMaaS Full Install",
+        state="pending",
+        description="x",
+        target_url=NEWER_RUN_URL,
+        creator={"login": "me"},
     )
     assert settle(world, REPO, SHA, RUN, RUN_URL, {"vmaas": "success"}) == ["vmaas"]
 

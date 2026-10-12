@@ -945,7 +945,7 @@ where the lines go: the decisions, the claim and the newest-wins rule are the sa
 ### One status per suite on the pull request
 
 The suites run in a workflow of the default branch, so their jobs are not listed on the pull request. Two commands put a
-status named `E2E / VMaaS` (or `CaaS`, `BMaaS`) on the pull request's head commit for each suite that runs, so the person
+status named `E2E / VMaaS Full Install` (or `CaaS`, `BMaaS`) on the pull request's head commit for each suite that runs, so the person
 looking at the pull request sees which suite is running or failed, and its "Details" link goes straight to that suite's job
 logs:
 
