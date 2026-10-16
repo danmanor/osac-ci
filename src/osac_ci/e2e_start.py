@@ -70,6 +70,7 @@ class Review:
     permission: str = (
         ""  # the reviewer's role on the repository (admin | maintain | write | triage | read | none), or ""
     )
+    user_type: str = "User"  # the kind of account (User | Bot | Organization), as GitHub names it; "" when unknown
 
 
 @dataclass(frozen=True)
@@ -141,6 +142,9 @@ def _qualifies(review: Review, author: str, fork: bool) -> bool:
         return False
     if review.user in TRUSTED_BOTS:
         return not fork
+    if fork and review.user_type != "User":
+        # on a fork only a person counts, not some other app that happens to hold write access
+        return False
     return review.permission in WRITE_PERMISSIONS
 
 
@@ -302,6 +306,7 @@ def fetch_inputs(
             association=raw.get("author_association") or "",
             commit_id=raw.get("commit_id") or "",
             submitted_at=raw.get("submitted_at") or "",
+            user_type=raw["user"].get("type") or "",
         )
         for raw in paginate(client, f"{base}/pulls/{number}/reviews")
         if raw.get("user")

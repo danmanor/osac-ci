@@ -201,6 +201,12 @@ def test_a_person_with_write_access_still_counts_on_a_pull_request_from_a_fork()
     assert d.action is Action.START and d.approvers == ("bob",)
 
 
+def test_an_account_that_is_not_a_user_does_not_count_on_a_pull_request_from_a_fork() -> None:
+    bot = replace(review("other-app[bot]"), user_type="Bot")
+    assert decide(inputs(fork=True, reviews=(bot,))).action is Action.WAIT_APPROVAL
+    assert decide(inputs(fork=False, reviews=(bot,))).starts
+
+
 def test_the_reason_for_waiting_names_coderabbit_only_for_a_pull_request_of_the_repository() -> None:
     d = decide(inputs(reviews=()))
     assert d.action is Action.WAIT_APPROVAL

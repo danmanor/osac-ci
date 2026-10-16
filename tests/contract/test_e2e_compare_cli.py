@@ -77,12 +77,19 @@ def add_pr(
             "state": "open",
             "draft": draft,
             "user": {"login": "alice"},
-            "head": {"sha": sha},
+            "head": {"sha": sha, "repo": {"full_name": REPO}},
             "base": {"ref": "main"},
         },
     )
     reviews = (
-        [{"user": {"login": "bob"}, "state": "APPROVED", "author_association": "MEMBER", "commit_id": sha}]
+        [
+            {
+                "user": {"login": "bob", "type": "User"},
+                "state": "APPROVED",
+                "author_association": "MEMBER",
+                "commit_id": sha,
+            }
+        ]
         if approved
         else []
     )

@@ -81,7 +81,8 @@ def world(
 
 
 def approval(user: str = "bob", assoc: str = "MEMBER", commit: str = SHA, state: str = "APPROVED") -> dict[str, Any]:
-    return {"user": {"login": user}, "state": state, "author_association": assoc, "commit_id": commit}
+    kind = "Bot" if user.endswith("[bot]") else "User"
+    return {"user": {"login": user, "type": kind}, "state": state, "author_association": assoc, "commit_id": commit}
 
 
 def bot_approval(commit: str = SHA) -> dict[str, Any]:
@@ -116,6 +117,20 @@ def test_a_person_with_write_access_approves_a_pull_request_from_a_fork() -> Non
     fake = world(pr=pr, reviews=(bot_approval(), approval("bob")), checks=(check("pre-commit"),))
     d = decide(fetch_inputs(fake, POLICY, REPO, 7))
     assert d.action is Action.START and d.approvers == ("bob",)
+
+
+def test_an_app_with_write_access_does_not_approve_a_pull_request_from_a_fork() -> None:
+    pr = {"head": {"sha": SHA, "repo": {"full_name": "mallory/app"}}}
+    fake = world(pr=pr, reviews=(approval("other-app[bot]"),), checks=(check("pre-commit"),))
+    d = decide(fetch_inputs(fake, POLICY, REPO, 7))
+    assert d.action is Action.WAIT_APPROVAL and d.approvers == ()
+
+
+def test_a_review_without_an_account_type_does_not_approve_a_pull_request_from_a_fork() -> None:
+    pr = {"head": {"sha": SHA, "repo": {"full_name": "mallory/app"}}}
+    raw = {"user": {"login": "bob"}, "state": "APPROVED", "author_association": "MEMBER", "commit_id": SHA}
+    d = decide(fetch_inputs(world(pr=pr, reviews=(raw,), checks=(check("pre-commit"),)), POLICY, REPO, 7))
+    assert d.action is Action.WAIT_APPROVAL
 
 
 def test_the_cheap_checks_are_the_required_ones_minus_the_gates_the_label_checks_the_e2e_check_and_osac_ci() -> None:
