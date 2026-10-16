@@ -189,6 +189,24 @@ def test_coderabbit_counts_as_an_approver_whatever_its_association() -> None:
     assert d.action is Action.START and d.approvers == ("coderabbitai[bot]",)
 
 
+def test_coderabbit_and_the_osac_ci_bot_do_not_count_on_a_pull_request_from_a_fork() -> None:
+    for bot in ("coderabbitai[bot]", "osac-ci[bot]"):
+        d = decide(inputs(fork=True, reviews=(review(bot, assoc="NONE"),)))
+        assert d.action is Action.WAIT_APPROVAL and d.approvers == ()
+        assert "CodeRabbit's approval does not count for a pull request from a fork" in d.reason
+
+
+def test_a_person_with_write_access_still_counts_on_a_pull_request_from_a_fork() -> None:
+    d = decide(inputs(fork=True, reviews=(review("coderabbitai[bot]", assoc="NONE"), review("bob"))))
+    assert d.action is Action.START and d.approvers == ("bob",)
+
+
+def test_the_reason_for_waiting_names_coderabbit_only_for_a_pull_request_of_the_repository() -> None:
+    d = decide(inputs(reviews=()))
+    assert d.action is Action.WAIT_APPROVAL
+    assert "or CodeRabbit" in d.reason and "fork" not in d.reason
+
+
 @pytest.mark.parametrize("assoc", ["OWNER", "MEMBER", "COLLABORATOR"])
 def test_people_with_write_access_count(assoc: str) -> None:
     assert decide(inputs(reviews=(review("bob", assoc=assoc),))).starts

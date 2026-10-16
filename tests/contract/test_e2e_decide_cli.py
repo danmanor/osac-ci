@@ -49,7 +49,7 @@ def world(
         "state": "open",
         "draft": False,
         "user": {"login": "alice"},
-        "head": {"sha": SHA},
+        "head": {"sha": SHA, "repo": {"full_name": REPO}},
         "base": {"ref": "main"},
         **(pr or {}),
     }
@@ -82,6 +82,40 @@ def world(
 
 def approval(user: str = "bob", assoc: str = "MEMBER", commit: str = SHA, state: str = "APPROVED") -> dict[str, Any]:
     return {"user": {"login": user}, "state": state, "author_association": assoc, "commit_id": commit}
+
+
+def bot_approval(commit: str = SHA) -> dict[str, Any]:
+    return approval("coderabbitai[bot]", "NONE", commit)
+
+
+def test_coderabbit_approves_a_pull_request_of_this_repository() -> None:
+    fake = world(reviews=(bot_approval(),), checks=(check("pre-commit"),))
+    inputs = fetch_inputs(fake, POLICY, REPO, 7)
+    assert not inputs.fork
+    assert decide(inputs).action is Action.START
+
+
+@pytest.mark.parametrize("head_repo", [{"full_name": "mallory/app"}, {"full_name": "Example/App-fork"}, None])
+def test_coderabbit_does_not_approve_a_pull_request_from_a_fork_or_a_deleted_fork(head_repo: object) -> None:
+    pr = {"head": {"sha": SHA, "repo": head_repo}}
+    fake = world(pr=pr, reviews=(bot_approval(),), checks=(check("pre-commit"),))
+    inputs = fetch_inputs(fake, POLICY, REPO, 7)
+    assert inputs.fork
+    d = decide(inputs)
+    assert d.action is Action.WAIT_APPROVAL and d.approvers == ()
+    assert "does not count for a pull request from a fork" in d.reason
+
+
+def test_the_repository_name_is_compared_without_regard_to_case() -> None:
+    pr = {"head": {"sha": SHA, "repo": {"full_name": "EXAMPLE/App"}}}
+    assert not fetch_inputs(world(pr=pr), POLICY, REPO, 7).fork
+
+
+def test_a_person_with_write_access_approves_a_pull_request_from_a_fork() -> None:
+    pr = {"head": {"sha": SHA, "repo": {"full_name": "mallory/app"}}}
+    fake = world(pr=pr, reviews=(bot_approval(), approval("bob")), checks=(check("pre-commit"),))
+    d = decide(fetch_inputs(fake, POLICY, REPO, 7))
+    assert d.action is Action.START and d.approvers == ("bob",)
 
 
 def test_the_cheap_checks_are_the_required_ones_minus_the_gates_the_label_checks_the_e2e_check_and_osac_ci() -> None:

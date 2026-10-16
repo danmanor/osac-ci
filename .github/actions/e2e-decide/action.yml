@@ -2,7 +2,7 @@
 name: Decide whether the E2E should start
 description: >-
   Say whether the full-install E2E should start for a pull request now (approved by a person with write access or
-  CodeRabbit, no cheap check has already failed, the change affects an E2E suite; checks still running do not delay it) and why, as a job summary and a JSON file. It
+  CodeRabbit; for a pull request from a fork only a person with write access, no cheap check has already failed, the change affects an E2E suite; checks still running do not delay it) and why, as a job summary and a JSON file. It
   starts nothing: a repository runs it as a dry run next to its current flow. Called from a workflow of the
   repository, pinned to a commit of osac-ci, like the publish action.
 

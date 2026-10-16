@@ -36,7 +36,9 @@ from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
 
 # Bots whose approval counts whatever their association with the repository: CodeRabbit, and the OSAC CI app, which
-# approves dependency updates that need no person (see ``bot_approve``).
+# approves dependency updates that need no person (see ``bot_approve``). Not on a pull request from a fork: the author
+# of a fork controls what CodeRabbit reads, and the approval starts a run of that code with secrets, so only a person
+# with write access can approve it.
 TRUSTED_BOTS = frozenset({"coderabbitai[bot]", "osac-ci[bot]"})
 # What a person's approval needs, read from their EFFECTIVE permission on the repository, not from their association
 # with it: an organization member or a collaborator can have read or triage access only, and an approval starts a run
@@ -97,6 +99,8 @@ class Inputs:
     # Legacy commit statuses (context -> state) on the head commit. Read only when a cheap requirement names no app, as
     # only such a requirement can be met by a status.
     statuses: Mapping[str, str] = field(default_factory=dict)
+    # The head commit is in a fork (or in a repository that no longer exists): no bot approval counts.
+    fork: bool = False
 
 
 @dataclass(frozen=True)
@@ -132,11 +136,11 @@ def _latest_reviews(reviews: Iterable[Review]) -> dict[str, Review]:
     return latest
 
 
-def _qualifies(review: Review, author: str) -> bool:
+def _qualifies(review: Review, author: str, fork: bool) -> bool:
     if review.user == author:
         return False
     if review.user in TRUSTED_BOTS:
-        return True
+        return not fork
     return review.permission in WRITE_PERMISSIONS
 
 
@@ -147,7 +151,7 @@ def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[s
     stale: list[str] = []
     blocking: list[str] = []
     for user, review in sorted(_latest_reviews(inputs.reviews).items()):
-        if not _qualifies(review, inputs.author):
+        if not _qualifies(review, inputs.author, inputs.fork):
             continue
         if review.state == "CHANGES_REQUESTED" and user not in TRUSTED_BOTS:
             blocking.append(user)
@@ -231,7 +235,12 @@ def decide(inputs: Inputs) -> Decision:
         extra = f" (approved an older commit: {', '.join(stale)})" if stale else ""
         return Decision(
             action=Action.WAIT_APPROVAL,
-            reason=f"no approval from a person with write access or CodeRabbit on the head commit{extra}",
+            reason=(
+                f"no approval from a person with write access on the head commit{extra} "
+                "(CodeRabbit's approval does not count for a pull request from a fork)"
+                if inputs.fork
+                else f"no approval from a person with write access or CodeRabbit on the head commit{extra}"
+            ),
             suites=names,
             suite_checks=checks,
             **base,
@@ -333,6 +342,7 @@ def fetch_inputs(
         suites=suites,
         filters=policy.path_filters.filters,
         statuses=statuses,
+        fork=str(((pr["head"].get("repo")) or {}).get("full_name", "")).lower() != repo.lower(),
     )
 
 
