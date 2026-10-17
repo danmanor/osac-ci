@@ -112,6 +112,11 @@ jobs:
             echo "PR #${NUMBER} is not a Konflux pull request; nothing to do"
             exit 0
           fi
+          # held runs are approved only for a branch of this repository, never for a fork
+          if [[ "$(jq -r '.head.repo.full_name == .base.repo.full_name' <<<"${pull}")" != "true" ]]; then
+            echo "PR #${NUMBER} is from a fork; nothing to do"
+            exit 0
+          fi
           title=$(jq -r '.title' <<<"${pull}")
           if [[ ! "${title}" =~ ^(NO-ISSUE|[A-Z][A-Z0-9]*-[0-9]+): ]]; then
             echo "Prefixing the title: NO-ISSUE: ${title}"

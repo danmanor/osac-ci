@@ -65,6 +65,11 @@ jobs:
             result=failure
           elif jq -e 'any(. == "cancelled")' <<<"${others}" >/dev/null; then
             result=cancelled
+          elif jq -e --arg p "${PLAN}" '. as $r | ((.[$p].outputs.suites // "[]") | fromjson) | any(.[]; ($r[.].result // "missing") != "success")' \
+            <<<"${RESULTS}" >/dev/null; then
+            # a suite the plan selected has no job or did not succeed (for example it was skipped): do not report a pass
+            echo "::error::A selected suite did not run to success"
+            result=failure
           else
             result=success
           fi

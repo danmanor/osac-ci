@@ -59,6 +59,7 @@ jobs:
         run: |
           set -euo pipefail
           # the suites that ran are the jobs that were not skipped; the decision and the tracker are not suites
+          # shellcheck disable=SC2016  # $non is a jq variable, not a shell one
           ran='del(.[($non | split(","))[]]) | [.[].result] | map(select(. != "skipped"))'
           if jq -e --arg non "${NON_SUITE}" "${ran} | any(. == \"failure\")" <<<"${RESULTS}" >/dev/null; then
             result=failure
@@ -66,6 +67,10 @@ jobs:
             result=cancelled
           elif jq -e --arg non "${NON_SUITE}" "${ran} | length == 0" <<<"${RESULTS}" >/dev/null; then
             # the decision said start but no suite ran: do not report a pass
+            result=failure
+          elif jq -e --argjson suites "${SUITES}" '. as $r | any($suites[]; ($r[.].result // "missing") != "success")' \
+            <<<"${RESULTS}" >/dev/null; then
+            # a suite the decision selected has no job or did not succeed (for example it was skipped): do not report a pass
             result=failure
           else
             result=success
