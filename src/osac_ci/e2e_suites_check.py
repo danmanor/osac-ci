@@ -71,10 +71,18 @@ def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -
     return {suite: job for suite, (_, job) in best.items()}
 
 
-def _state(job: Job | None) -> tuple[str, str]:
+def _state(job: Job | None, *, final: bool = False) -> tuple[str, str]:
+    """The line for a job: waiting or running. With ``final`` a job that has ended gets its result."""
     if job is None or job.status == "queued":
         return "Waiting for a runner", "waiting"
+    if final and job.status == "completed":
+        result = _result(job)
+        return RESULT_TITLES[result], RESULT_STATES[result]
     return "Running", "pending"
+
+
+RESULT_TITLES = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}
+RESULT_STATES = {"success": "success", "failure": "failure", "cancelled": "error"}
 
 
 def _result(job: Job | None) -> str:
@@ -95,11 +103,13 @@ def track(
     timeout: float = 7200,
     interval: float = 30,
     kind: str = "statuses",
+    follow: bool = False,
     sleep: Callable[[float], None] = time.sleep,
     clock: Callable[[], float] = time.monotonic,
 ) -> list[str]:
     """Write a line for each suite and update it until every suite's job is running (or the time is up). Returns the
-    suites it wrote a line for."""
+    suites it wrote a line for. With ``follow`` it goes on until every job has ended, and each suite's line gets its
+    result as soon as that suite's job ends, so a suite that passed shows as passed while the others still run."""
     sha = check_sha(sha)
     lines = validate_lines(lines)
     suites = list(lines)
@@ -109,13 +119,17 @@ def track(
         jobs = find_jobs(client, repo, run_id, suites)
         for suite in suites:
             job = jobs.get(suite)
-            description, state = _state(job)
+            description, state = _state(job, final=follow)
             url = job.url if job else run_url
             if shown.get(suite) == (description, url):
                 continue
             post_status(client, repo, sha, lines[suite], state, description, url, kind)
             shown[suite] = (description, url)
-        if all(s in jobs and jobs[s].status != "queued" for s in suites) or clock() >= deadline:
+        if follow:
+            finished = all(s in jobs and jobs[s].status == "completed" for s in suites)
+        else:
+            finished = all(s in jobs and jobs[s].status != "queued" for s in suites)
+        if finished or clock() >= deadline:
             return list(shown)
         sleep(interval)
 
@@ -142,8 +156,8 @@ def settle(
             continue
         job = jobs.get(suite)
         result = _result(job)
-        title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
-        state = {"success": "success", "failure": "failure", "cancelled": "error"}[result]
-        post_status(client, repo, sha, name, state, title, job.url if job else run_url, kind)
+        post_status(
+            client, repo, sha, name, RESULT_STATES[result], RESULT_TITLES[result], job.url if job else run_url, kind
+        )
         written.append(suite)
     return written

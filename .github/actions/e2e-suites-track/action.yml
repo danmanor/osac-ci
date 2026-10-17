@@ -33,6 +33,11 @@ inputs:
   timeout:
     description: Seconds to wait for the jobs to get a runner
     default: "7200"
+  follow:
+    description: >-
+      "true" to keep going until every suite has ended and complete each line as its suite ends (a suite that passed shows
+      as passed while the others still run); "false" stops once every suite has a runner
+    default: "false"
   kind:
     description: >-
       Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
@@ -55,6 +60,7 @@ runs:
         RUN_ID: ${{ inputs.run-id }}
         RUN_URL: ${{ inputs.run-url }}
         TIMEOUT: ${{ inputs.timeout }}
+        FOLLOW: ${{ inputs.follow }}
         KIND: ${{ inputs.kind }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
@@ -66,5 +72,8 @@ runs:
         esac
         case "$RUN_ID" in "" | *[!0-9]*) echo "::error::The run id must be digits only."; exit 1 ;; esac
         case "$TIMEOUT" in "" | *[!0-9]*) echo "::error::The timeout must be digits only."; exit 1 ;; esac
+        follow=()
+        if [ "${FOLLOW:-false}" = "true" ]; then follow=(--follow); fi
         uv run --locked --project "$root" osac-ci e2e-suites-track --repo "$REPO" --sha "$SHA" --run-id "$RUN_ID" \
-          --run-url="$RUN_URL" --suite-checks "$SUITE_CHECKS" --timeout "$TIMEOUT" --kind "$KIND"
+          --run-url="$RUN_URL" --suite-checks "$SUITE_CHECKS" --timeout "$TIMEOUT" --kind "$KIND" \
+          ${follow[@]+"${follow[@]}"}

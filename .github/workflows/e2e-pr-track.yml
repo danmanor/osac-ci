@@ -39,26 +39,66 @@ jobs:
   track:
     name: Suite checks
     runs-on: ubuntu-latest
-    timeout-minutes: 140
+    timeout-minutes: 180
     permissions:
       contents: read
     steps:
       # The E2E lines are check runs of the OSAC CI app, which the pull request page draws (a spinner while they run, the
-      # exact names). The token has the permissions this job needs and lasts an hour.
-      - name: Token of the OSAC CI app, for the E2E lines
-        id: app-token
+      # exact names). A line follows its suite: waiting for a runner, running, and then passed or failed as soon as that
+      # suite's job ends (the others may still run); the `finish` workflow settles whatever is left. The app token lives
+      # an hour, so the tracking goes on in rounds, each with a fresh token (a round that finds every suite ended does
+      # nothing). Three rounds follow a suite for about two and a half hours.
+      - name: Token of the OSAC CI app, for the E2E lines (round 1)
+        id: app-token-1
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
-      - uses: $/.github/actions/e2e-suites-track
+      - name: Follow the suites (round 1)
+        uses: $/.github/actions/e2e-suites-track
         with:
-          github-token: ${{ steps.app-token.outputs.token }}
+          github-token: ${{ steps.app-token-1.outputs.token }}
           kind: checks
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
-          # The app token lives an hour: stop tracking before it expires. The lines stay as they are until the result.
+          follow: "true"
+          timeout: ${{ inputs.timeout }}
+      - name: Token of the OSAC CI app, for the E2E lines (round 2)
+        id: app-token-2
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - name: Follow the suites (round 2)
+        uses: $/.github/actions/e2e-suites-track
+        with:
+          github-token: ${{ steps.app-token-2.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suite-checks: ${{ inputs.suite-checks }}
+          follow: "true"
+          timeout: ${{ inputs.timeout }}
+      - name: Token of the OSAC CI app, for the E2E lines (round 3)
+        id: app-token-3
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - name: Follow the suites (round 3)
+        uses: $/.github/actions/e2e-suites-track
+        with:
+          github-token: ${{ steps.app-token-3.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suite-checks: ${{ inputs.suite-checks }}
+          follow: "true"
           timeout: ${{ inputs.timeout }}

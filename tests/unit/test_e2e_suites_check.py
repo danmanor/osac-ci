@@ -140,6 +140,64 @@ def test_the_line_turns_to_running_when_the_job_gets_a_runner_and_the_tracking_e
     assert contexts.count(CA) == 1 and contexts.count(VM) == 2
 
 
+def test_following_a_suite_that_ended_completes_its_line_while_the_other_still_runs() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    world.job("caas / e2e", "in_progress")
+    looks = {"n": 0}
+    real = world.request
+
+    def request(method: str, path: str, **kw: Any) -> Response:
+        if path.endswith("/jobs"):
+            looks["n"] += 1
+            if looks["n"] == 2:
+                world.job("caas / e2e", "completed", "success")  # CaaS ends first, VMaaS is still running
+            if looks["n"] == 3:
+                snapshot["vm"] = world.line(VM)["description"]
+                snapshot["ca"] = world.line(CA)["description"]
+                world.job("vmaas / e2e", "completed", "failure")
+        return real(method, path, **kw)
+
+    snapshot: dict[str, str] = {}
+    world.request = request  # type: ignore[method-assign]
+    fast(world, LINES, follow=True)
+    assert snapshot == {"vm": "Running", "ca": "Passed"}  # the passed suite showed as passed while the other still ran
+    assert world.line(VM)["description"] == "Failed" and world.line(VM)["state"] == "failure"
+    assert world.line(CA)["state"] == "success"
+
+
+def test_following_goes_on_until_every_job_has_ended() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    looks = {"n": 0}
+    real = world.request
+
+    def request(method: str, path: str, **kw: Any) -> Response:
+        if path.endswith("/jobs"):
+            looks["n"] += 1
+            if looks["n"] == 5:
+                world.job("vmaas / e2e", "completed", "success")
+        return real(method, path, **kw)
+
+    world.request = request  # type: ignore[method-assign]
+    fast(world, {"vmaas": VM}, follow=True)
+    assert looks["n"] == 5 and world.line(VM)["description"] == "Passed"
+
+
+def test_following_stops_at_the_deadline_with_the_job_still_running() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    fast(world, {"vmaas": VM}, follow=True, timeout=3)
+    assert world.line(VM)["description"] == "Running"
+
+
+def test_without_following_a_job_that_has_a_runner_ends_the_tracking_as_before() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    fast(world, {"vmaas": VM}, timeout=100)
+    assert len(world.writes) == 1 and world.line(VM)["description"] == "Running"
+
+
 def test_nothing_is_written_again_when_nothing_changed() -> None:
     world = SuiteWorld()
     world.job("vmaas / e2e", "queued")
@@ -343,6 +401,35 @@ def test_the_track_action_passes_its_inputs_to_the_command(tmp_path: Path) -> No
     assert code == 0
     assert "e2e-suites-track --repo o/r --sha " + SHA + " --run-id 7 --run-url=https://x/y" in args
     assert f"--suite-checks {CHECKS_JSON}" in args and "--timeout 60" in args
+
+
+def test_the_track_action_follows_the_suites_only_when_asked_to(tmp_path: Path) -> None:
+    _, args = run_action(
+        tmp_path, "e2e-suites-track", "Track", {"SUITE_CHECKS": CHECKS_JSON, "TIMEOUT": "60", "FOLLOW": "true"}
+    )
+    assert "--follow" in args
+    for i, value in enumerate(("false", "", "yes")):
+        sub = tmp_path / str(i)
+        sub.mkdir()
+        _, args = run_action(
+            sub, "e2e-suites-track", "Track", {"SUITE_CHECKS": CHECKS_JSON, "TIMEOUT": "60", "FOLLOW": value}
+        )
+        assert "--follow" not in args
+
+
+def test_the_track_command_follows_until_the_suite_ends(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    world = SuiteWorld()
+    world.job("caas / e2e", "completed", "success")
+    monkeypatch.setattr(cli, "build_client", lambda **_: world)
+    argv = [
+        "e2e-suites-track", "--repo", REPO, "--sha", SHA, "--run-id", str(RUN),
+        "--suite-checks", json.dumps({"caas": CA}), "--interval", "0", "--follow",
+    ]  # fmt: skip
+    assert cli.main(argv) == 0
+    assert json.loads(capsys.readouterr().out) == ["caas"]
+    assert world.line(CA)["description"] == "Passed"
 
 
 @pytest.mark.parametrize(("key", "value"), [("RUN_ID", "7;ls"), ("TIMEOUT", "1h")])
