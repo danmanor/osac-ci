@@ -98,10 +98,22 @@ jobs:
       contents: read  # the actions are fetched from osac-ci by the runner; nothing of the calling repository is checked out
       pull-requests: read  # read the pull request, its commits, files and reviews; the approval uses the app's token
     steps:
+      # The policy answer (commits and files) is needed before held runs are approved: the approval below starts the pull
+      # request's CI, so a pull request the policy refuses must not get it. This only reads; it approves nothing. A
+      # failure leaves no answer, and then no held run is approved.
+      - uses: $/.github/actions/bot-decide
+        id: decide
+        if: inputs.konflux-prep
+        continue-on-error: true
+        with:
+          github-token: ${{ github.token }}
+          repo: ${{ github.repository }}
+          number: ${{ matrix.number }}
       - name: Make a Konflux pull request ready
         if: inputs.konflux-prep
         env:
           GH_TOKEN: ${{ secrets.MERGE_QUEUE_TOKEN }}
+          DECISION_FILE: ${{ steps.decide.outputs.json-file }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ matrix.number }}
           KONFLUX: ${{ inputs.konflux-login }}
@@ -127,9 +139,16 @@ jobs:
             gh pr edit "${NUMBER}" --repo "${REPO}" --add-label jira/valid-reference
           fi
           head_sha=$(jq -r '.head.sha' <<<"${pull}")
-          # A real listing failure must not look like "no held runs".
+          # Held runs are approved only when the policy approves exactly this head commit (fail closed: no answer, no approval).
+          if [[ -z "${DECISION_FILE}" || ! -s "${DECISION_FILE}" ]] \
+            || ! jq -e --arg sha "${head_sha}" 'length == 1 and .[0].action == "approve" and .[0].head_sha == $sha' \
+              "${DECISION_FILE}" >/dev/null; then
+            echo "The policy does not approve PR #${NUMBER} at ${head_sha:0:7}; its held runs are left for a person."
+            exit 0
+          fi
+          # A real listing failure must not look like "no held runs". Only runs of this repository at this commit.
           pending=$(gh api --paginate "repos/${REPO}/actions/runs?head_sha=${head_sha}&status=action_required&per_page=100" \
-            --jq '.workflow_runs[].id')
+            | jq -r --arg repo "${REPO}" '.workflow_runs[] | select(.head_repository.full_name == $repo) | .id')
           approved=0
           failed=0
           for run_id in ${pending}; do
