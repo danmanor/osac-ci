@@ -193,3 +193,20 @@ def test_finish_refuses_a_value_that_is_not_what_it_should_be_before_the_program
 ) -> None:
     code, args, _ = run_finish(tmp_path, **{name: value})
     assert code == 1 and args == ""
+
+
+def test_finish_by_hand_passes_the_flag_and_the_suites_the_change_needs(tmp_path: Path) -> None:
+    code, args, _ = run_finish(tmp_path, MANUAL="true", SELECTED='{"vmaas": "E2E / VMaaS Full Install"}')
+    assert code == 0
+    assert "--manual" in args and '--selected-checks={"vmaas": "E2E / VMaaS Full Install"}' in args
+
+
+def test_finish_by_hand_with_no_suites_still_passes_an_empty_object(tmp_path: Path) -> None:
+    _, args, _ = run_finish(tmp_path, MANUAL="true", SELECTED="")
+    assert "--manual" in args and "--selected-checks={}" in args
+
+
+@pytest.mark.parametrize("manual", ["", "false", "yes"])
+def test_finish_without_the_by_hand_flag_never_passes_it(tmp_path: Path, manual: str) -> None:
+    _, args, _ = run_finish(tmp_path, MANUAL=manual, SELECTED='{"vmaas": "x"}')
+    assert "--manual" not in args and "--selected-checks" not in args

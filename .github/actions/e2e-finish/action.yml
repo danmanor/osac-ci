@@ -26,6 +26,14 @@ inputs:
   run-url:
     description: Link of that run, shown with the status
     default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+  manual:
+    description: >-
+      "true" for a run started by hand: the E2E check is then written only when every suite in selected-checks has passed
+      (the result and detail are not used)
+    default: "false"
+  selected-checks:
+    description: JSON object, suite id -> line name, of every suite the change needs (the selected-checks output of decide)
+    default: "{}"
   kind:
     description: >-
       Where the lines are written: "statuses" (commit statuses, shown with a yellow dot) or "checks" (check runs of the
@@ -48,6 +56,8 @@ runs:
         DETAIL: ${{ inputs.detail }}
         RUN_URL: ${{ inputs.run-url }}
         KIND: ${{ inputs.kind }}
+        MANUAL: ${{ inputs.manual }}
+        SELECTED: ${{ inputs.selected-checks }}
         ACTION_PATH: ${{ github.action_path }}
       run: |
         set -euo pipefail
@@ -66,5 +76,10 @@ runs:
         if [ "${#SHA}" -ne 40 ]; then echo "::error::The head commit must be 40 characters."; exit 1; fi
         args=(--repo "$REPO" --sha "$SHA" --result "$RESULT" --run-url="$RUN_URL" --kind "$KIND")
         if [ -n "$DETAIL" ]; then args+=(--detail="$DETAIL"); fi
+        if [ "${MANUAL:-false}" = "true" ]; then
+          selected="${SELECTED:-}"
+          if [ -z "$selected" ]; then selected='{}'; fi
+          args+=(--manual "--selected-checks=$selected")
+        fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
         uv run --locked --project "$root" osac-ci e2e-finish "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

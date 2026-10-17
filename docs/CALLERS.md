@@ -36,6 +36,7 @@ name: E2E for pull requests
 # The decision cancels the E2E of older commits by reading run titles: keep this exact format.
 run-name: >-
   ${{ github.event_name == 'workflow_dispatch' && format('E2E #{0} (started by hand)', inputs.number) ||
+  github.event_name == 'issue_comment' && format('E2E #{0} (suites checked in the comment)', github.event.issue.number) ||
   format('E2E {0}:{1} @ {2}', github.event.workflow_run.head_repository.full_name, github.event.workflow_run.head_branch,
   github.event.workflow_run.head_sha) }}
 
@@ -43,6 +44,8 @@ on:
   workflow_run:
     workflows: ["CI", "E2E review relay"]   # the names are inputs of the decision workflow (ci-workflow-name, relay-workflow-name)
     types: [requested, completed]
+  issue_comment:
+    types: [edited]                          # the boxes of the control comment (suites started by hand)
   workflow_dispatch:
     inputs:
       number:
@@ -99,6 +102,8 @@ jobs:
       sha: ${{ needs.decide.outputs.sha }}
       suites: ${{ needs.decide.outputs.suites }}
       suite-checks: ${{ needs.decide.outputs.suite-checks }}
+      manual: ${{ needs.decide.outputs.manual }}
+      selected-checks: ${{ needs.decide.outputs.selected-checks }}
       results: ${{ toJSON(needs) }}          # the jobs that are not suites are listed in non-suite-jobs (default decide,track)
     secrets:
       OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
@@ -106,6 +111,15 @@ jobs:
 
 The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay` that does nothing on
 `pull_request_review` and on `pull_request` `ready_for_review`/`converted_to_draft`; finishing wakes `e2e-pr.yml`.
+
+## Suites started by hand
+
+The decision workflow keeps a comment on the pull request of a member of the organization (written by the OSAC CI app)
+with a checkbox per suite; the caller above only needs the `issue_comment` trigger, the three-way `run-name` and the two
+extra inputs of `finish`. The comment lists the suites of `.github/e2e-policy.yml`; a job with `manual_only: true` is
+listed and can be started from the comment, but the automatic decision never chooses it and the `E2E` check does not wait
+for it. Its suite job in `e2e-pr.yml` is written like the others (`if: ... contains(needs.decide.outputs.suites, '"<id>"')`).
+The rules are in [`RULES.md`](RULES.md).
 
 ## The caller of the merge queue (`.github/workflows/e2e-queue.yml`)
 

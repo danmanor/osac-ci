@@ -32,6 +32,17 @@ inputs:
       Head commit of the workflow run that finished (from a workflow_run event). The open pull request(s) with exactly
       this head are evaluated
     default: ""
+  manual-comment-id:
+    description: >-
+      Id of the control comment that was edited (from an issue_comment event): the suites whose box is checked are
+      started by hand, if the person who edited it is a member of the organization. Needs number and manual-by
+    default: ""
+  manual-by:
+    description: Login of the person who edited the control comment
+    default: ""
+  org-token:
+    description: Token that can read the members of the organization (members read); used for a request by hand
+    default: ""
 
 outputs:
   json-file:
@@ -70,11 +81,15 @@ runs:
         POLICY_FILE: ${{ inputs.policy-file }}
         NUMBER: ${{ inputs.number }}
         HEAD_SHA: ${{ inputs.head-sha }}
+        MANUAL_COMMENT_ID: ${{ inputs.manual-comment-id }}
+        MANUAL_BY: ${{ inputs.manual-by }}
+        OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
         ACTION_PATH: ${{ github.action_path }}
         OUT_DIR: ${{ runner.temp }}
       run: |
         set -euo pipefail
         root="$ACTION_PATH/../../.."
+        if [ -z "${OSAC_CI_ORG_TOKEN:-}" ]; then unset OSAC_CI_ORG_TOKEN; fi
         if [ -n "$NUMBER" ]; then
           case "$NUMBER" in
             *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
@@ -101,8 +116,15 @@ runs:
         policy_path="$root/$POLICY"
         if [ -n "$POLICY_FILE" ]; then policy_path="$POLICY_FILE"; fi
         # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        by_hand=()
+        if [ -n "${MANUAL_COMMENT_ID:-}" ]; then
+          case "$MANUAL_COMMENT_ID" in
+            *[!0-9]*) echo "::error::The comment id must be digits only."; exit 1 ;;
+          esac
+          by_hand=(--manual-comment-id "$MANUAL_COMMENT_ID" "--manual-by=${MANUAL_BY:-}")
+        fi
         uv run --locked --project "$root" osac-ci e2e-decide --policy "$policy_path" --repo "$REPO" "${which[@]}" \
-          --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
+          ${by_hand[@]+"${by_hand[@]}"} --json-file "$json" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"
         # The answer for a job that starts from it: ready only for exactly one pull request whose answer is "start".
         count=$(jq 'length' "$json")
         ready=false

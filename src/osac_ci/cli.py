@@ -23,7 +23,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from osac_ci import bot_approve, e2e_check, e2e_start, e2e_suites_check, lockfacts
+from osac_ci import bot_approve, e2e_check, e2e_start, e2e_suites_check, lockfacts, manual_run
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
@@ -342,6 +342,12 @@ def _parser() -> argparse.ArgumentParser:
     which.add_argument("--head-sha", help="the open pull request(s) with exactly this head commit")
     dec.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     dec.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
+    dec.add_argument(
+        "--manual-comment-id",
+        type=int,
+        help="an edit of this comment (the control comment) asks for suites by hand; needs --number and --manual-by",
+    )
+    dec.add_argument("--manual-by", default="", help="who edited the comment (a member of the organization may ask)")
 
     suites_cmd = sub.add_parser(
         "e2e-suites",
@@ -378,6 +384,27 @@ def _parser() -> argparse.ArgumentParser:
     efin.add_argument(
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
+    efin.add_argument(
+        "--manual",
+        action="store_true",
+        help="the run was started by hand: write the E2E check only when every suite in --selected-checks has passed",
+    )
+    efin.add_argument(
+        "--selected-checks", default="{}", metavar="JSON", help="JSON object: suite id -> line name (from e2e-decide)"
+    )
+
+    mcom = sub.add_parser(
+        "manual-comment",
+        help="create or refresh the comment that lists the E2E suites with a checkbox each (starts nothing)",
+    )
+    mcom.add_argument("--policy", type=Path, required=True)
+    mcom.add_argument("--repo", required=True, help="owner/name")
+    mcom.add_argument("--number", type=int, required=True, help="the pull request")
+    mcom.add_argument(
+        "--decision-file", type=Path, help="the JSON file written by e2e-decide, for the answer to a request"
+    )
+    mcom.add_argument("--by", default="", help="who asked, for the answer")
+    mcom.add_argument("--run-url", default="", help="link of the workflow run, shown with the answer")
 
     strack = sub.add_parser(
         "e2e-suites-track",
@@ -580,6 +607,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "e2e-finish":
         try:
+            if args.manual:
+                selected = json.loads(args.selected_checks)
+                if not isinstance(selected, dict):
+                    raise ValueError("--selected-checks must be a JSON object")
+                print(
+                    "E2E by hand: "
+                    + e2e_check.finish_by_hand(build_client(), args.repo, args.sha, selected, args.run_url, args.kind)
+                )
+                return 0
             e2e_check.finish(build_client(), args.repo, args.sha, args.result, args.run_url, args.detail, args.kind)
         except (GitHubError, KeyError, ValueError) as exc:
             print(f"error: e2e-finish failed: {exc}", file=sys.stderr)
@@ -797,10 +833,47 @@ def main(argv: list[str] | None = None) -> int:
         print(compare_mod.to_json(found) if args.json else compare_mod.render(found), end="")
         return 1 if args.fail_on_looser and found.looser else 0
 
+    if args.command == "manual-comment":
+        try:
+            notes: str | None = None
+            if args.decision_file is not None:
+                entries = json.loads(args.decision_file.read_text(encoding="utf-8"))
+                found = [n for e in entries if isinstance(e, dict) for n in e.get("notes", [])]
+                if found:
+                    notes = manual_run.answer_text(
+                        [(str(n["suite"]), str(n["note"])) for n in found], args.by, args.run_url
+                    )
+            result = manual_run.refresh(
+                build_client(), policy, args.repo, args.number, notes=notes, org_client=build_org_client()
+            )
+        except (OSError, GitHubError, KeyError, ValueError) as exc:
+            print(f"error: manual-comment failed: {exc}", file=sys.stderr)
+            return 3
+        print(f"PR #{args.number}: control comment {result}")
+        return 0
+
     if args.command == "e2e-decide":
+        if (args.manual_comment_id is None) != (not args.manual_by):
+            print("error: --manual-comment-id and --manual-by go together", file=sys.stderr)
+            return 2
+        if args.manual_comment_id is not None and args.number is None:
+            print("error: a request by hand needs --number", file=sys.stderr)
+            return 2
+
+        def _inputs(client: GitHubClient, n: int) -> e2e_start.Inputs:
+            asked: tuple[str, ...] = ()
+            refused = ""
+            if args.manual_comment_id is not None:
+                asked, refused = manual_run.read_request(
+                    client, args.repo, n, args.manual_comment_id, args.manual_by, org_client=build_org_client()
+                )
+            return e2e_start.fetch_inputs(
+                client, policy, args.repo, n, requested=asked, requested_by=args.manual_by, request_refused=refused
+            )
+
         return _decide_command(
             args,
-            lambda client, n: e2e_start.decide(e2e_start.fetch_inputs(client, policy, args.repo, n)),
+            lambda client, n: e2e_start.decide(_inputs(client, n)),
             e2e_start.render_markdown,
             e2e_start.to_json,
             "e2e-decide",

@@ -56,6 +56,8 @@ class Action(StrEnum):
     WAIT_APPROVAL = "wait-approval"
     BLOCKED_CHANGES_REQUESTED = "blocked-changes-requested"
     BLOCKED_CHEAP_FAILED = "blocked-cheap-checks-failed"
+    ALREADY_PASSED = "already-passed"  # every suite the change needs has already passed on this commit
+    NOTHING_TO_START = "nothing-to-start"  # a person asked for suites by hand, and none needs to start
 
 
 @dataclass(frozen=True)
@@ -79,6 +81,7 @@ class Suite:
     check: str
     filters: tuple[str, ...]
     filters_any: tuple[str, ...]
+    manual_only: bool = False  # only ever started by hand (the control comment), never chosen by the decision
 
 
 @dataclass(frozen=True)
@@ -100,6 +103,12 @@ class Inputs:
     statuses: Mapping[str, str] = field(default_factory=dict)
     # The head commit is in a fork (or in a repository that no longer exists): no bot approval counts.
     fork: bool = False
+    # Suites a member of the organization asked for by hand, through the control comment, and who asked. The caller has
+    # already checked the member and the comment; the decision only checks that each suite exists and is not running.
+    requested: tuple[str, ...] = ()
+    requested_by: str = ""
+    # Why a request was refused before the decision (the person is not a member): shown in the comment, nothing starts.
+    request_refused: str = ""
 
 
 @dataclass(frozen=True)
@@ -118,6 +127,11 @@ class Decision:
     # (suite, line) for each suite listed in ``suites``: the name of the line the suite gets on the pull request, from
     # the ``check`` of its job in the policy, so a new suite needs no change here
     suite_checks: tuple[tuple[str, str], ...] = ()
+    # A run started by hand: it starts only the suites asked for, whatever the approval, draft or cheap-check state, and
+    # it never claims the E2E check (the sum of the suites the change needs is written when they have all passed).
+    manual: bool = False
+    selected_checks: tuple[tuple[str, str], ...] = ()  # (suite, line) of every suite the change needs: the E2E's sum
+    notes: tuple[tuple[str, str], ...] = ()  # (suite, what happened to the request), for the control comment
 
     @property
     def starts(self) -> bool:
@@ -162,11 +176,27 @@ def approvals(inputs: Inputs) -> tuple[tuple[str, ...], tuple[str, ...], tuple[s
     return tuple(approvers), tuple(stale), tuple(blocking)
 
 
+def automatic(suites: Iterable[Suite]) -> tuple[Suite, ...]:
+    """The suites the decision may choose: not the ones that are only started by hand."""
+    return tuple(s for s in suites if not s.manual_only)
+
+
 def applicable_suites(inputs: Inputs) -> tuple[Suite, ...]:
     """The suites this change needs. When the changed files are not known completely nothing is skipped on a guess."""
+    suites = automatic(inputs.suites)
     if not inputs.changed_files or not inputs.changed_files_known:
-        return inputs.suites
-    return _needed(inputs.suites, inputs.changed_files, inputs.filters)
+        return suites
+    return _needed(suites, inputs.changed_files, inputs.filters)
+
+
+def line_state(latest: Mapping[str, CheckRun], check: str) -> str:
+    """What a suite's line says on the head commit: none (no line), active (waiting or running), passed or failed."""
+    run = latest.get(check)
+    if run is None:
+        return "none"
+    if run.status != "completed":
+        return "active"
+    return "passed" if run.conclusion == "success" else "failed"
 
 
 def _needed(suites: Iterable[Suite], files: Sequence[str], filters: Mapping[str, Sequence[str]]) -> tuple[Suite, ...]:
@@ -176,7 +206,7 @@ def _needed(suites: Iterable[Suite], files: Sequence[str], filters: Mapping[str,
 def suite_checks_for_files(policy: Policy, files: Sequence[str]) -> tuple[tuple[str, str], ...]:
     """The suites a change to these files needs, by the same rule a pull request is judged by, each with the name of
     its line on the pull request. No files means nothing is known, so no suite is skipped."""
-    suites = suites_of(policy)
+    suites = automatic(suites_of(policy))
     needed = suites if not files else _needed(suites, files, policy.path_filters.filters)
     return tuple((s.name, s.check) for s in needed)
 
@@ -214,6 +244,10 @@ def decide(inputs: Inputs) -> Decision:
     }
     if inputs.state != "open":
         return Decision(action=Action.SKIP_CLOSED, reason="the pull request is not open", **base)
+    latest = latest_checks(inputs.check_runs)
+    selected = tuple((s.name, s.check) for s in applicable_suites(inputs))
+    if inputs.requested or inputs.request_refused:
+        return _decide_by_hand(inputs, base, latest, selected)
     if inputs.draft:
         return Decision(action=Action.SKIP_DRAFT, reason="the pull request is a draft", **base)
     needed = applicable_suites(inputs)
@@ -223,8 +257,22 @@ def decide(inputs: Inputs) -> Decision:
             reason="no E2E suite is affected by the changed files (docs only)",
             **base,
         )
-    names = tuple(s.name for s in needed)
-    checks = tuple((s.name, s.check) for s in needed)
+    # Suites a person already ran by hand on this commit and that passed are not run again; when that is all of them,
+    # the E2E is done (the sum is written by the report, not by a run).
+    # Only while the E2E check has no answer yet: once it has one, a re-run of the finished run runs everything again.
+    answer = latest.get("E2E")
+    answered = answer is not None and answer.status == "completed"
+    todo = needed if answered else tuple(s for s in needed if line_state(latest, s.check) != "passed")
+    if not todo:
+        return Decision(
+            action=Action.ALREADY_PASSED,
+            reason=f"every suite this change needs has passed on this commit: {', '.join(s.name for s in needed)}",
+            suites=(),
+            selected_checks=selected,
+            **base,
+        )
+    names = tuple(s.name for s in todo)
+    checks = tuple((s.name, s.check) for s in todo)
     if blocking:
         return Decision(
             action=Action.BLOCKED_CHANGES_REQUESTED,
@@ -265,13 +313,61 @@ def decide(inputs: Inputs) -> Decision:
     )
 
 
+def _decide_by_hand(
+    inputs: Inputs,
+    base: dict[str, Any],
+    latest: Mapping[str, CheckRun],
+    selected: tuple[tuple[str, str], ...],
+) -> Decision:
+    """A member of the organization checked suites in the control comment. Approval, draft and cheap checks do not
+    matter (the person decides to spend the run); what matters is that each suite exists and is not already running or
+    passed on this commit. Nothing is claimed: the E2E check stays what the automatic path says."""
+    known = {s.name: s for s in inputs.suites}
+    starts: list[Suite] = []
+    notes: list[tuple[str, str]] = []
+    if inputs.request_refused:
+        notes.append(("", inputs.request_refused))
+    for name in dict.fromkeys(inputs.requested):
+        suite = known.get(name)
+        if suite is None:
+            notes.append((name, "is not a suite of this repository"))
+            continue
+        state = line_state(latest, suite.check)
+        if state == "active":
+            notes.append((name, "is already running on this commit; it was not started again"))
+        elif state == "passed":
+            notes.append((name, "already passed on this commit; it was not run again"))
+        else:
+            starts.append(suite)
+            notes.append((name, f"started by {inputs.requested_by}"))
+    if not starts:
+        return Decision(
+            action=Action.NOTHING_TO_START,
+            reason="; ".join(f"{n or 'request'}: {t}" for n, t in notes) or "nothing was asked for",
+            manual=True,
+            selected_checks=selected,
+            notes=tuple(notes),
+            **base,
+        )
+    return Decision(
+        action=Action.START,
+        reason=f"started by hand by {inputs.requested_by}: {', '.join(s.name for s in starts)}",
+        suites=tuple(s.name for s in starts),
+        suite_checks=tuple((s.name, s.check) for s in starts),
+        manual=True,
+        selected_checks=selected,
+        notes=tuple(notes),
+        **base,
+    )
+
+
 # reading GitHub -------------------------------------------------------------------------------------------------
 
 
 def suites_of(policy: Policy) -> tuple[Suite, ...]:
     """The E2E suites of the policy: its jobs of kind ``e2e``."""
     return tuple(
-        Suite(job.suite or name, job.check, job.filters, job.filters_any)
+        Suite(job.suite or name, job.check, job.filters, job.filters_any, job.manual_only)
         for name, job in policy.jobs.items()
         if job.kind == "e2e"
     )
@@ -285,6 +381,9 @@ def fetch_inputs(
     *,
     branch: str | None = None,
     required: Sequence[Requirement] | None = None,
+    requested: tuple[str, ...] = (),
+    requested_by: str = "",
+    request_refused: str = "",
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
     over many pull requests reads them once)."""
@@ -347,6 +446,9 @@ def fetch_inputs(
         filters=policy.path_filters.filters,
         statuses=statuses,
         fork=str(((pr["head"].get("repo")) or {}).get("full_name", "")).lower() != repo.lower(),
+        requested=requested,
+        requested_by=requested_by,
+        request_refused=request_refused,
     )
 
 
@@ -421,6 +523,9 @@ def to_json(decision: Decision) -> str:
             "cheap_failed": list(decision.cheap_failed),
             "cheap_pending": list(decision.cheap_pending),
             "e2e_checks": list(decision.e2e_checks),
+            "manual": decision.manual,
+            "selected_checks": dict(decision.selected_checks),
+            "notes": [{"suite": s, "note": n} for s, n in decision.notes],
         },
         indent=2,
     )

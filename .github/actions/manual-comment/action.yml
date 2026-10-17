@@ -1,0 +1,69 @@
+---
+name: Keep the control comment of the E2E suites
+description: >-
+  Create or refresh the comment of a pull request that lists the E2E suites with a checkbox each, so that a member of
+  the organization can start a suite by hand. It also says what became of a request (started, already running, already
+  passed). Run it after the report of the decision, so the lines it shows are current. It starts nothing. Called from a
+  workflow of the repository, pinned to a commit of osac-ci, like the other actions.
+
+# The calling workflow decides when this runs and which tokens it holds: github-token writes the comment (the OSAC CI
+# app, whose comments are the only ones read as requests), org-token reads who is a member of the organization. This
+# action never checks out the calling repository, so it cannot run pull request code. Every input reaches the shell
+# through an environment variable, never through the script text.
+inputs:
+  github-token:
+    description: Token that reads the pull request and its check runs and writes the comment (the OSAC CI app; issues write)
+    required: true
+  org-token:
+    description: Token that can read the members of the organization (members read); empty uses github-token
+    default: ""
+  repo:
+    description: Repository, owner/name
+    required: true
+  number:
+    description: Pull request number
+    required: true
+  policy-file:
+    description: The E2E policy file of the repository, as a path on the runner (from its default branch)
+    required: true
+  decision-file:
+    description: The JSON file written by the decide action, to answer a request by hand (empty when there was none)
+    default: ""
+  by:
+    description: Who asked, when a box was checked
+    default: ""
+  run-url:
+    description: Link of this workflow run, shown with the answer
+    default: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: Comment
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        OSAC_CI_ORG_TOKEN: ${{ inputs.org-token }}
+        REPO: ${{ inputs.repo }}
+        NUMBER: ${{ inputs.number }}
+        POLICY_FILE: ${{ inputs.policy-file }}
+        DECISION_FILE: ${{ inputs.decision-file }}
+        BY: ${{ inputs.by }}
+        RUN_URL: ${{ inputs.run-url }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        case "$NUMBER" in
+          "" | *[!0-9]*) echo "::error::The pull request number must be digits only."; exit 1 ;;
+        esac
+        args=(--policy "$POLICY_FILE" --repo "$REPO" --number "$NUMBER" --run-url="$RUN_URL")
+        if [ -n "$DECISION_FILE" ]; then args+=(--decision-file "$DECISION_FILE"); fi
+        if [ -n "$BY" ]; then args+=(--by="$BY"); fi
+        # An empty org token must not reach the program as an empty variable: it then uses the main token.
+        if [ -z "$OSAC_CI_ORG_TOKEN" ]; then unset OSAC_CI_ORG_TOKEN; fi
+        # --project makes uv use the locked environment of osac-ci at the pinned commit, wherever the job runs.
+        uv run --locked --project "$root" osac-ci manual-comment "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY:-/dev/null}"

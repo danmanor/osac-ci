@@ -27,6 +27,14 @@ on:
         description: The caller's toJSON(needs)
         type: string
         required: true
+      manual:
+        description: The decision's `manual` ("true" for a run started by hand from the control comment)
+        type: string
+        default: "false"
+      selected-checks:
+        description: The decision's `selected-checks` (JSON object), used for a run started by hand
+        type: string
+        default: "{}"
       non-suite-jobs:
         description: Comma separated ids of the caller's jobs that are not suites
         type: string
@@ -85,7 +93,10 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
+      # A run started by hand does not write the E2E check: its suites' lines are completed below, and then the check is
+      # written only if every suite the change needs has passed.
       - uses: $/.github/actions/e2e-finish
+        if: inputs.manual != 'true'
         with:
           github-token: ${{ steps.app-token.outputs.token }}
           kind: checks
@@ -100,3 +111,13 @@ jobs:
           repo: ${{ github.repository }}
           sha: ${{ inputs.sha }}
           suite-checks: ${{ inputs.suite-checks }}
+      - uses: $/.github/actions/e2e-finish
+        if: inputs.manual == 'true'
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          result: ${{ steps.result.outputs.result }}
+          manual: "true"
+          selected-checks: ${{ inputs.selected-checks }}
