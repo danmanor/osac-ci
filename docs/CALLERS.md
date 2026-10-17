@@ -134,7 +134,7 @@ The rules are in [`RULES.md`](RULES.md).
 
 `on: schedule: [{cron: '3,18,33,48 * * * *'}]` and `workflow_dispatch` with a `number` input, a `concurrency` group so one
 sweep runs at a time, and `sweep: uses: ...bot-sweep.yml@<sha>` with `number: ${{ inputs.number }}`, optionally
-`konflux-prep: true`, the app key, and `MERGE_QUEUE_TOKEN` only for the Konflux preparation. Job permissions: contents
+`konflux-prep: true`, the app key, and `MERGE_QUEUE_TOKEN` only to keep the old token for the Konflux preparation (deprecated: the app does it now). Job permissions: contents
 read, pull-requests read.
 
 ## How the shared workflows find their own actions

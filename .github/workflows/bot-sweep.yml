@@ -14,8 +14,10 @@
 # out or runs pull request code: the decision comes from the API.
 #
 # For a Konflux pull request (`konflux-prep: true`) it also makes the title and the label the Jira reference check needs
-# and approves its held workflow runs, with the merge queue token: an edit by the workflow's own token starts no workflow,
-# and the Jira check has to run again.
+# and approves its held workflow runs, as the OSAC CI app (a token with pull-requests, issues and actions write): an edit
+# by the workflow's own token starts no workflow, and the Jira check has to run again; an edit by the app does. The
+# secret MERGE_QUEUE_TOKEN, which did this before, is still accepted and wins when given, so a repository can switch by
+# dropping it once a Konflux pull request has been prepared by the app; it is deprecated and will be removed.
 #
 # The caller gives the calling job contents read and pull-requests read.
 name: Bot approval sweep
@@ -44,7 +46,9 @@ on:
         description: Private key of the OSAC CI app (an organization secret)
         required: true
       MERGE_QUEUE_TOKEN:
-        description: Token that edits titles and labels and approves held runs (only for konflux-prep)
+        description: >-
+          Deprecated. A token that edits titles and labels and approves held runs (only for konflux-prep); when given it
+          is used instead of the app's token
         required: false
 
 permissions: {}
@@ -109,10 +113,22 @@ jobs:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           number: ${{ matrix.number }}
+      # A token of the OSAC CI app for the preparation only: it edits the title and the label and approves held runs, so
+      # it needs pull-requests, issues and actions write, and nothing else. Minted only for a Konflux preparation.
+      - name: Token of the OSAC CI app, for the Konflux preparation
+        id: prep-token
+        if: inputs.konflux-prep
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-pull-requests: write
+          permission-issues: write
+          permission-actions: write
       - name: Make a Konflux pull request ready
         if: inputs.konflux-prep
         env:
-          GH_TOKEN: ${{ secrets.MERGE_QUEUE_TOKEN }}
+          GH_TOKEN: ${{ secrets.MERGE_QUEUE_TOKEN || steps.prep-token.outputs.token }}
           DECISION_FILE: ${{ steps.decide.outputs.json-file }}
           REPO: ${{ github.repository }}
           NUMBER: ${{ matrix.number }}
