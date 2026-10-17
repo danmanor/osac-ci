@@ -27,6 +27,18 @@ on:
         description: The caller's toJSON(needs)
         type: string
         required: true
+      number:
+        description: The pull request number (the decision's `number`), to refresh the control comment
+        type: string
+        default: ""
+      policy-file:
+        description: The repository's E2E policy, read from its default branch, to refresh the control comment
+        type: string
+        default: .github/e2e-policy.yml
+      filters-file:
+        description: The repository's shared path filters, read from its default branch (the policy points at it)
+        type: string
+        default: .github/filters/ci-filters.yml
       manual:
         description: The decision's `manual` ("true" for a run started by hand from the control comment)
         type: string
@@ -93,6 +105,9 @@ jobs:
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
           permission-checks: write
           permission-actions: read
+          permission-issues: write
+          permission-pull-requests: write
+          permission-members: read
       # A run started by hand does not write the E2E check: its suites' lines are completed below, and then the check is
       # written only if every suite the change needs has passed.
       - uses: $/.github/actions/e2e-finish
@@ -121,3 +136,23 @@ jobs:
           result: ${{ steps.result.outputs.result }}
           manual: "true"
           selected-checks: ${{ inputs.selected-checks }}
+      # The control comment shows what each suite's line says: refresh it now the suites have ended (a failure here must not
+      # change the result). The policy is the repository's, from its default branch.
+      - name: Check out the policy
+        if: inputs.number != ''
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          sparse-checkout: |
+            ${{ inputs.policy-file }}
+            ${{ inputs.filters-file }}
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+      - uses: $/.github/actions/manual-comment
+        if: inputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          org-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ inputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}

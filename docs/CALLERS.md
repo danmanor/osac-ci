@@ -102,6 +102,7 @@ jobs:
       sha: ${{ needs.decide.outputs.sha }}
       suites: ${{ needs.decide.outputs.suites }}
       suite-checks: ${{ needs.decide.outputs.suite-checks }}
+      number: ${{ needs.decide.outputs.number }}
       manual: ${{ needs.decide.outputs.manual }}
       selected-checks: ${{ needs.decide.outputs.selected-checks }}
       results: ${{ toJSON(needs) }}          # the jobs that are not suites are listed in non-suite-jobs (default decide,track)

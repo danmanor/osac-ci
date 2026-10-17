@@ -232,8 +232,8 @@ def views() -> tuple[manual_run.SuiteView, ...]:
 
 def test_the_comment_lists_every_suite_with_an_unchecked_box() -> None:
     body = manual_run.render_comment(HEAD, views())
-    assert body.startswith(manual_run.MARKER) and "<details>" in body
-    assert "- [ ] <!-- suite:vmaas --> **VMaaS Full Install**: passed ([run](https://x/run/1))" in body
+    assert body.startswith(manual_run.MARKER) and "<details>" in body and "> [!TIP]" in body
+    assert "- [ ] <!-- suite:vmaas --> **VMaaS Full Install** · ✅ passed ([run](https://x/run/1))" in body
     assert manual_run.requested_suites(body) == ()
 
 
@@ -248,8 +248,9 @@ def test_a_box_written_by_hand_in_the_text_is_not_a_request() -> None:
 
 
 def test_the_last_answer_survives_a_refresh() -> None:
-    body = manual_run.render_comment(HEAD, views(), "Last request by @bob:\n- **vmaas** started by bob")
-    assert manual_run.notes_of(body).startswith("Last request by @bob")
+    body = manual_run.render_comment(HEAD, views(), "**Last request by @bob**\n- **vmaas** started by bob")
+    assert manual_run.notes_of(body) == "**Last request by @bob**\n- **vmaas** started by bob"
+    assert "> [!NOTE]" in body
 
 
 def test_only_the_app_writes_the_control_comment() -> None:
@@ -345,7 +346,7 @@ def test_the_comment_is_created_for_a_member_s_pull_request_and_lists_every_suit
     fake = Fake([passed("E2E / VMaaS Full Install")])
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "suite:vmaas" in body and "suite:netris" in body and "VMaaS Full Install**: passed" in body
+    assert "suite:vmaas" in body and "suite:netris" in body and "VMaaS Full Install** · ✅ passed" in body
 
 
 def test_a_second_refresh_with_nothing_new_writes_nothing() -> None:
@@ -362,7 +363,7 @@ def test_a_changed_line_updates_the_comment_and_keeps_the_last_answer() -> None:
     fake.runs.append(passed("E2E / VMaaS Full Install"))
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "updated"  # type: ignore[arg-type]
     body = fake.comments[0]["body"]
-    assert "VMaaS Full Install**: passed" in body and "started by bob" in body
+    assert "VMaaS Full Install** · ✅ passed" in body and "started by bob" in body
 
 
 def test_an_answer_replaces_the_old_one() -> None:
