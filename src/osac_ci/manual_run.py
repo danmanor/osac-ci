@@ -34,12 +34,14 @@ NOTES_START = "<!-- notes:start -->"
 NOTES_END = "<!-- notes:end -->"
 BOX = re.compile(r"^- \[(?P<mark>[ xX])\] <!-- suite:(?P<suite>[a-z0-9][a-z0-9_-]{0,39}) -->", re.MULTILINE)
 LINE_PREFIX = "E2E / "
+# What a suite's line says, with an icon the eye catches: the same four states as ``e2e_start.line_state``.
 STATE_TEXT = {
-    "none": "not run on this commit",
-    "active": "waiting for a runner or running",
-    "passed": "passed",
-    "failed": "failed",
+    "none": "➖ not run on this commit",
+    "active": "⏳ running",
+    "passed": "✅ passed",
+    "failed": "❌ failed",
 }
+RULES_URL = "https://github.com/osac-project/osac-ci/blob/main/docs/RULES.md#starting-suites-by-hand"
 
 
 @dataclass(frozen=True)
@@ -56,27 +58,41 @@ class SuiteView:
         return self.check[len(LINE_PREFIX) :] if self.check.startswith(LINE_PREFIX) else self.check
 
 
+def _alert(kind: str, lines: Sequence[str]) -> list[str]:
+    """A GitHub alert block (a note, a tip): a quote whose first line names the kind."""
+    return [f"> [!{kind}]", *(f"> {line}".rstrip() for line in lines)]
+
+
 def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str:
-    """The comment. Every box is unchecked: a box that was checked is cleared when the request has been answered."""
+    """The comment: an alert that says what it is for, the suites with a checkbox each in a collapsed section, and the
+    answer to the last request. Every box is unchecked: a box that was checked is cleared when the request has been
+    answered."""
     lines = [
         MARKER,
-        "### E2E tests",
+        *_alert(
+            "TIP",
+            [
+                "## 🧪 E2E tests",
+                "",
+                "Any member of the organization can start a suite now, whatever the approval state of this pull "
+                "request (a draft, a fork and your own pull request included). Check a box below: the suite runs for "
+                f"the head commit `{sha[:7]}` and the box clears itself. A suite that is already running, or has "
+                "already passed on this commit, is not started again.",
+            ],
+        ),
         "",
-        "Any member of the organization can start a suite now, whatever the approval state of this pull request (draft "
-        "or not, a fork or not): check its box. The suite runs for the current head commit and the box clears itself. "
-        "A suite that is already running or has already passed on this commit is not started again.",
-        "",
-        f"Head commit: `{sha[:7]}`",
-        "",
-        f"<details><summary>Run E2E tests now ({len(views)} available)</summary>",
+        f"<details><summary><b>Run E2E tests now</b> ({len(views)} available)</summary>",
         "",
     ]
     for view in views:
         link = f" ([run]({view.url}))" if view.url else ""
         lines.append(
-            f"- [ ] <!-- suite:{view.suite} --> **{view.label}**: {STATE_TEXT.get(view.state, view.state)}{link}"
+            f"- [ ] <!-- suite:{view.suite} --> **{view.label}** · {STATE_TEXT.get(view.state, view.state)}{link}"
         )
-    lines += ["", "</details>", "", NOTES_START, notes.strip(), NOTES_END, ""]
+    lines += ["", "</details>", "", NOTES_START]
+    if notes.strip():
+        lines += _alert("NOTE", notes.strip().splitlines())
+    lines += [NOTES_END, "", f"<sub>[How suites are started by hand]({RULES_URL}) · osac-ci</sub>", ""]
     return "\n".join(lines)
 
 
@@ -86,11 +102,13 @@ def requested_suites(body: str) -> tuple[str, ...]:
 
 
 def notes_of(body: str) -> str:
-    """The last answer the comment shows, so a refresh keeps it until there is a newer one."""
+    """The last answer the comment shows (its alert, without the quote marks), so a refresh keeps it until there is a
+    newer one."""
     start, end = body.find(NOTES_START), body.find(NOTES_END)
     if start < 0 or end < start:
         return ""
-    return body[start + len(NOTES_START) : end].strip()
+    lines = [ln for ln in body[start + len(NOTES_START) : end].strip().splitlines() if ln.strip() != "> [!NOTE]"]
+    return "\n".join(ln[2:] if ln.startswith("> ") else ln.removeprefix(">") for ln in lines).strip()
 
 
 def answer_text(notes: Sequence[tuple[str, str]], by: str, run_url: str = "") -> str:
@@ -102,7 +120,7 @@ def answer_text(notes: Sequence[tuple[str, str]], by: str, run_url: str = "") ->
         subject = f"**{suite}**" if suite else "The request"
         lines.append(f"- {subject} {note}")
     tail = f" ([run]({run_url}))" if run_url else ""
-    return f"Last request by @{by}{tail}:\n" + "\n".join(lines)
+    return f"**Last request by @{by}**{tail}\n" + "\n".join(lines)
 
 
 def is_control_comment(comment: Mapping[str, object], bot: str = BOT_LOGIN) -> bool:
