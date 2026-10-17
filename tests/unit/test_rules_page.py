@@ -28,6 +28,16 @@ jobs:
     suite: two
     filters: [touched]
     filters_any: [code]
+  e2e-three:
+    kind: e2e
+    check: "E2E / Three"
+    suite: three
+    paths: ['three/**']
+    exclude_paths: ['three/docs/**']
+  e2e-four:
+    kind: e2e
+    check: "E2E / Four"
+    suite: four
 path_filters:
   mode: enforce
   filters:
@@ -66,6 +76,10 @@ def test_the_suites_of_a_repository_are_listed() -> None:
     assert "### example/repo" in page
     assert "| `one` | E2E / One | one of `code` |" in page
     assert "| `two` | E2E / Two | all of `touched`; one of `code` |" in page
+    assert (
+        "| `three` | E2E / Three | a changed file matches `three/**`; not only files matching `three/docs/**` |" in page
+    )
+    assert "| `four` | E2E / Four | always |" in page
 
 
 def test_check_passes_for_the_committed_page_and_fails_for_a_stale_one(
@@ -87,3 +101,16 @@ def test_check_needs_an_output_file(capsys: pytest.CaptureFixture[str]) -> None:
 def test_without_an_output_the_page_is_printed(capsys: pytest.CaptureFixture[str]) -> None:
     assert cli.main(["explain-rules"]) == 0
     assert capsys.readouterr().out == render_rules(flow())
+
+
+def test_a_file_that_cannot_be_read_or_written_is_a_clean_error(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    a_directory = tmp_path / "RULES.md"
+    a_directory.mkdir()
+    assert cli.main(["explain-rules", "--output", str(a_directory), "--check"]) == 3
+    assert "cannot read" in capsys.readouterr().err
+    assert cli.main(["explain-rules", "--output", str(a_directory)]) == 3
+    assert "cannot write" in capsys.readouterr().err
+    assert cli.main(["explain-rules", "--policy", str(tmp_path / "missing.yml")]) == 3
+    assert "explain-rules failed" in capsys.readouterr().err

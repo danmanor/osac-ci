@@ -9,9 +9,9 @@ it cannot drift from what the code applies.
 
 ## The path of a pull request
 
-1. The author opens a pull request. The cheap checks run at once: `CI` (the repository's own tests and lint, summed
-   up by
-   one job) and `jira-reference` (the title names a Jira issue, or says `NO-ISSUE:`).
+1. The author opens a pull request. Two required checks run at once: `CI` (the repository's own tests and lint, summed
+   up by one job) and `jira-reference` (the title names a Jira issue, or says `NO-ISSUE:`). `jira-reference` says
+   nothing about the quality of the change, so the E2E does not count it (see "Checks that do not count as cheap").
 2. A person approves, or CodeRabbit does for a branch of the repository itself (see below). The approval is for the
    exact
    commit; a push dismisses it.

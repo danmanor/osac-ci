@@ -518,14 +518,18 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "explain-rules":
         try:
             page = render_rules(flow(), [load_policy(p) for p in args.policy])
-        except (FlowError, PolicyError) as exc:
+        except (FlowError, PolicyError, OSError) as exc:
             print(f"error: explain-rules failed: {exc}", file=sys.stderr)
             return 3
         if args.check:
             if args.output is None:
                 print("error: --check needs --output", file=sys.stderr)
                 return 2
-            current = args.output.read_text(encoding="utf-8") if args.output.exists() else None
+            try:
+                current = args.output.read_text(encoding="utf-8") if args.output.exists() else None
+            except (OSError, UnicodeDecodeError) as exc:
+                print(f"error: explain-rules failed: cannot read {args.output}: {exc}", file=sys.stderr)
+                return 3
             if current != page:
                 print(
                     f"error: {args.output} is stale; run: osac-ci explain-rules --output {args.output}", file=sys.stderr
@@ -533,8 +537,12 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             return 0
         if args.output is not None:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(page, encoding="utf-8")
+            try:
+                args.output.parent.mkdir(parents=True, exist_ok=True)
+                args.output.write_text(page, encoding="utf-8")
+            except OSError as exc:
+                print(f"error: explain-rules failed: cannot write {args.output}: {exc}", file=sys.stderr)
+                return 3
             return 0
         print(page, end="")
         return 0
