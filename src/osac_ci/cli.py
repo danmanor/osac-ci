@@ -518,7 +518,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "explain-rules":
         try:
             page = render_rules(flow(), [load_policy(p) for p in args.policy])
-        except (FlowError, PolicyError, OSError) as exc:
+        except (FlowError, PolicyError, OSError, UnicodeDecodeError) as exc:
             print(f"error: explain-rules failed: {exc}", file=sys.stderr)
             return 3
         if args.check:

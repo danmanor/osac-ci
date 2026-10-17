@@ -114,3 +114,10 @@ def test_a_file_that_cannot_be_read_or_written_is_a_clean_error(
     assert "cannot write" in capsys.readouterr().err
     assert cli.main(["explain-rules", "--policy", str(tmp_path / "missing.yml")]) == 3
     assert "explain-rules failed" in capsys.readouterr().err
+
+
+def test_a_policy_file_that_is_not_utf8_is_a_clean_error(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
+    bad = tmp_path / "policy.yml"
+    bad.write_bytes(b"version: 1\nrepo: \xff\xfe\n")
+    assert cli.main(["explain-rules", "--policy", str(bad)]) == 3
+    assert "explain-rules failed" in capsys.readouterr().err
