@@ -420,6 +420,11 @@ def _parser() -> argparse.ArgumentParser:
     strack.add_argument("--timeout", type=float, default=7200, help="seconds to wait for the jobs to get a runner")
     strack.add_argument("--interval", type=float, default=30, help="seconds between looks")
     strack.add_argument(
+        "--follow",
+        action="store_true",
+        help="go on until every suite has ended, completing each line as its suite ends (not only until they run)",
+    )
+    strack.add_argument(
         "--kind", choices=e2e_check.KINDS, default="statuses", help="write commit statuses (default) or check runs"
     )
 
@@ -509,7 +514,7 @@ def _e2e_suites(args: argparse.Namespace) -> int:
             ids = e2e_suites_check.track(
                 build_client(), args.repo, args.sha, args.run_id, args.run_url,
                 e2e_suites_check.parse_lines(args.suite_checks),
-                timeout=args.timeout, interval=args.interval, kind=args.kind,
+                timeout=args.timeout, interval=args.interval, kind=args.kind, follow=args.follow,
             )  # fmt: skip
         else:
             ids = e2e_suites_check.settle(
