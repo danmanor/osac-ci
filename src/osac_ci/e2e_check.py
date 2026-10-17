@@ -32,7 +32,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from osac_ci.e2e_start import line_state
+from osac_ci.e2e_start import CHECK_APP, line_state
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 from osac_ci.github.snapshot import COMMIT_SHA
 from osac_ci.model import CheckRun
@@ -40,7 +40,6 @@ from osac_ci.planner import latest_checks
 
 CONTEXT = "E2E"
 CREATOR = "github-actions[bot]"  # who a workflow's built-in token writes statuses as
-CHECK_APP = "osac-ci"  # the GitHub App whose check runs are read when the kind is "checks"
 KINDS = ("statuses", "checks")  # where the E2E lines are written: commit statuses, or check runs of the app
 DESCRIPTION_MAX = 140  # what GitHub keeps of a status description
 WAITING_ID = "waiting"  # external id of a status that waits
@@ -208,10 +207,18 @@ def _not_affected(existing: Existing | None) -> Outcome:
     return Outcome("not-affected", False, (Write("success", NOT_AFFECTED_TITLE),))
 
 
+def replaceable(existing: Existing | None) -> bool:
+    """Whether the sum of the suites may be written over what the E2E check says: nothing yet, a wait, or a failure (a
+    run that failed does not stop later runs by hand from passing every suite). A pass and a running run stay."""
+    if existing is None or existing.phase is Phase.WAITING:
+        return True
+    return existing.phase is Phase.DONE and existing.state != "success"
+
+
 def _already_passed(entry: Mapping[str, Any], existing: Existing | None) -> Outcome:
-    """Every suite the change needs passed on this commit (run by hand): the E2E is the sum of them. A result that is
-    already there stays."""
-    if existing is not None and existing.phase is not Phase.WAITING:
+    """Every suite the change needs passed on this commit (run by hand): the E2E is the sum of them. A pass and a run
+    that is running stay."""
+    if not replaceable(existing):
         return Outcome("already-ran", False, note="a result is already on this commit")
     names = ", ".join(_selected(entry))
     return Outcome("already-passed", False, (Write("success", describe(f"Passed: {names}")),))
@@ -435,8 +442,9 @@ def finish(
 def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> dict[str, str]:
     """For each suite (id -> line name), what its line says on the commit: none, active, passed or failed."""
     runs = tuple(
-        CheckRun(raw["name"], raw["status"], raw.get("conclusion"), raw.get("started_at"))
+        CheckRun(raw["name"], raw["status"], raw.get("conclusion"), raw.get("started_at"), app=CHECK_APP)
         for raw in paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs", key="check_runs")
+        if (raw.get("app") or {}).get("slug") == CHECK_APP
     )
     latest = latest_checks(runs)
     return {suite: line_state(latest, line) for suite, line in lines.items()}
@@ -458,8 +466,8 @@ def finish_by_hand(
         left = ", ".join(s for s, state in states.items() if state != "passed")
         return f"not every suite has passed yet ({left}): the E2E check is left as it is"
     existing = latest_check(client, repo, sha, kind)
-    if existing is not None and existing.phase is not Phase.WAITING:
-        return "the E2E check already has its answer"
+    if not replaceable(existing):
+        return "the E2E check already passed or a run is running it"
     write_status(client, repo, sha, Write("success", describe(f"Passed: {', '.join(lines)}")), run_url, kind)
     return "every suite passed: the E2E check is green"
 

@@ -22,7 +22,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from osac_ci.e2e_start import Suite, line_state, suites_of
+from osac_ci.e2e_start import CHECK_APP, Suite, line_state, suites_of
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
@@ -32,6 +32,7 @@ MARKER = "<!-- osac-ci:manual-run -->"
 BOT_LOGIN = "osac-ci[bot]"  # who writes the control comment: the OSAC CI app
 NOTES_START = "<!-- notes:start -->"
 NOTES_END = "<!-- notes:end -->"
+HEAD_MARK = re.compile(r"<!-- head:(?P<sha>[0-9a-f]{40}) -->")
 BOX = re.compile(r"^- \[(?P<mark>[ xX])\] <!-- suite:(?P<suite>[a-z0-9][a-z0-9_-]{0,39}) -->", re.MULTILINE)
 LINE_PREFIX = "E2E / "
 # What a suite's line says, with an icon the eye catches: the same four states as ``e2e_start.line_state``.
@@ -69,6 +70,7 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str
     answered."""
     lines = [
         MARKER,
+        f"<!-- head:{sha} -->",
         *_alert(
             "TIP",
             [
@@ -99,6 +101,12 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str
 def requested_suites(body: str) -> tuple[str, ...]:
     """The suites whose box is checked in the comment, in the order they are listed."""
     return tuple(m.group("suite") for m in BOX.finditer(body) if m.group("mark") in "xX")
+
+
+def head_of(body: str) -> str:
+    """The full head commit the comment was written for ("" for a comment that has none)."""
+    found = HEAD_MARK.search(body)
+    return found.group("sha") if found else ""
 
 
 def notes_of(body: str) -> str:
@@ -161,25 +169,27 @@ def read_request(
     sender: str,
     bot: str = BOT_LOGIN,
     org_client: GitHubClient | None = None,
-) -> tuple[tuple[str, ...], str]:
-    """The suites asked for by an edit of the comment ``comment_id`` of pull request ``number`` by ``sender``, and the
-    reason a request was refused (empty when none was). Only the control comment of this pull request, written by the
-    app, counts; only a member of the organization may ask. Nothing asked for is not a refusal: an edit that unchecks a
-    box (the app clearing it) asks for nothing. ``org_client`` is the client that may read the organization's members
-    (the main client when none is given)."""
+) -> tuple[tuple[str, ...], str, str]:
+    """The suites asked for by an edit of the comment ``comment_id`` of pull request ``number`` by ``sender``, the
+    reason a request was refused (empty when none was) and the head commit the comment was written for (the
+    decision refuses the request when the pull request has moved on). Only the control comment of this pull
+    request, written by the app, counts; only a member of the organization may ask. Nothing asked for is not a
+    refusal: an edit that unchecks a box (the app clearing it) asks for nothing. ``org_client`` is the client that
+    may read the organization's members (the main client when none is given)."""
     repo = check_repo(repo)
     comment = get(client, f"/repos/{repo}/issues/comments/{comment_id}")
     if not is_control_comment(comment, bot):
-        return (), ""
+        return (), "", ""
     if not str(comment.get("issue_url", "")).endswith(f"/issues/{number}"):
-        return (), ""
-    asked = requested_suites(str(comment.get("body", "")))
+        return (), "", ""
+    body = str(comment.get("body", ""))
+    asked = requested_suites(body)
     if not asked:
-        return (), ""
+        return (), "", ""
     org = repo.split("/", 1)[0]
     if not is_org_member(org_client or client, org, sender):
-        return (), f"@{sender} is not a member of the {org} organization, so nothing was started"
-    return asked, ""
+        return (), f"@{sender} is not a member of the {org} organization, so nothing was started", ""
+    return asked, "", head_of(body)
 
 
 def _conclusion(run: Mapping[str, object]) -> str | None:
@@ -187,10 +197,20 @@ def _conclusion(run: Mapping[str, object]) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _is_app(run: Mapping[str, object]) -> bool:
+    app = run.get("app")
+    return isinstance(app, Mapping) and app.get("slug") == CHECK_APP
+
+
 def views_for(suites: Sequence[Suite], runs: Sequence[Mapping[str, object]]) -> tuple[SuiteView, ...]:
-    """The suites with what their lines say, from the raw check runs of the head commit."""
+    """The suites with what their lines say, from the raw check runs of the head commit. Only the OSAC CI app's lines
+    count: another app's check with the same name says nothing about a suite."""
+    runs = [r for r in runs if _is_app(r)]
     latest = latest_checks(
-        tuple(CheckRun(str(r["name"]), str(r["status"]), _conclusion(r), str(r.get("started_at") or "")) for r in runs)
+        tuple(
+            CheckRun(str(r["name"]), str(r["status"]), _conclusion(r), str(r.get("started_at") or ""), app=CHECK_APP)
+            for r in runs
+        )
     )
     urls: dict[str, str] = {}
     for r in sorted(runs, key=lambda r: str(r.get("started_at") or "")):

@@ -42,6 +42,9 @@ from osac_ci.policy import Policy
 # WRITE_PERMISSIONS  the effective repository roles that make a person's approval count;
 # NOT_CHEAP  required checks that say nothing about the quality of the change (the E2E cannot wait for its own result;
 #            the OSAC CI check, a verdict on the others, is already left out by ``required_contexts``).
+CHECK_APP = (
+    "osac-ci"  # the GitHub App that writes the E2E check and the suite lines: only its check runs are read as them
+)
 _FLOW = flow()
 TRUSTED_BOTS = _FLOW.trusted_bots
 WRITE_PERMISSIONS = _FLOW.write_permissions
@@ -244,7 +247,9 @@ def decide(inputs: Inputs) -> Decision:
     }
     if inputs.state != "open":
         return Decision(action=Action.SKIP_CLOSED, reason="the pull request is not open", **base)
-    latest = latest_checks(inputs.check_runs)
+    # Only the app's own check runs say what a suite or the E2E did: another app (or a workflow) that posts a check with
+    # the same name must not make a suite look passed or running.
+    latest = latest_checks(tuple(r for r in inputs.check_runs if r.app == CHECK_APP))
     selected = tuple((s.name, s.check) for s in applicable_suites(inputs))
     if inputs.requested or inputs.request_refused:
         return _decide_by_hand(inputs, base, latest, selected)
@@ -373,6 +378,20 @@ def suites_of(policy: Policy) -> tuple[Suite, ...]:
     )
 
 
+def refuse_stale_request(
+    requested: tuple[str, ...], refused: str, request_sha: str, head_sha: str
+) -> tuple[tuple[str, ...], str]:
+    """A box was checked in a comment written for ``request_sha``; the pull request is at ``head_sha`` now. When they
+    differ the person did not see this commit, so nothing is started and the comment says to check the box again. A
+    comment that names no commit (an older one) is not checked."""
+    if requested and request_sha and request_sha != head_sha:
+        return (), (
+            f"the pull request changed since the comment was written ({request_sha[:7]} is now {head_sha[:7]}); "
+            "nothing was started: check the box again"
+        )
+    return requested, refused
+
+
 def fetch_inputs(
     client: GitHubClient,
     policy: Policy,
@@ -384,6 +403,7 @@ def fetch_inputs(
     requested: tuple[str, ...] = (),
     requested_by: str = "",
     request_refused: str = "",
+    request_sha: str = "",
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
     over many pull requests reads them once)."""
@@ -418,6 +438,7 @@ def fetch_inputs(
             raw["status"],
             raw.get("conclusion"),
             raw.get("started_at"),
+            app=str((raw.get("app") or {}).get("slug") or ""),
             app_id=_app_id(raw),
         )
         for raw in paginate(client, f"{base}/commits/{head_sha}/check-runs", key="check_runs")
@@ -429,6 +450,7 @@ def fetch_inputs(
         files.append(str(raw["filename"]))
         if raw.get("previous_filename"):
             files.append(str(raw["previous_filename"]))
+    requested, request_refused = refuse_stale_request(requested, request_refused, request_sha, head_sha)
     # One more request, and only when a requirement exists that a commit status could also satisfy.
     statuses = fetch_statuses(client, repo, head_sha) if any(r.integration_id is None for r in cheap) else {}
     return Inputs(

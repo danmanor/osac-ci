@@ -114,6 +114,7 @@ def track(
     lines = validate_lines(lines)
     suites = list(lines)
     shown: dict[str, tuple[str, str]] = {}
+    newer: set[str] = set()  # suites whose line a newer run has taken over: this run leaves them alone
     deadline = clock() + timeout
     while True:
         jobs = find_jobs(client, repo, run_id, suites)
@@ -121,7 +122,12 @@ def track(
             job = jobs.get(suite)
             description, state = _state(job, final=follow)
             url = job.url if job else run_url
-            if shown.get(suite) == (description, url):
+            if suite in newer or shown.get(suite) == (description, url):
+                continue
+            current = newest_status(client, repo, sha, lines[suite], kind)
+            owner = run_of_url(str(current.get("target_url") or "")) if current is not None else None
+            if owner is not None and owner != run_id:
+                newer.add(suite)
                 continue
             post_status(client, repo, sha, lines[suite], state, description, url, kind)
             shown[suite] = (description, url)

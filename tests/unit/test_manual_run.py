@@ -26,8 +26,10 @@ SUITES = (
 FILTERS = {"code": ["**/*.go"]}
 
 
-def line(name: str, conclusion: str | None = "success") -> CheckRun:
-    return CheckRun(name, "completed" if conclusion else "in_progress", conclusion, "2026-10-10T10:00:00Z", app_id=1)
+def line(name: str, conclusion: str | None = "success", app: str = "osac-ci") -> CheckRun:
+    return CheckRun(
+        name, "completed" if conclusion else "in_progress", conclusion, "2026-10-10T10:00:00Z", app=app, app_id=1
+    )
 
 
 def inputs(**changes: object) -> Inputs:
@@ -194,8 +196,11 @@ class Fake:
         raise AssertionError(f"unexpected request {method} {path}")
 
 
-def passed(name: str) -> dict[str, Any]:
-    return {"name": name, "status": "completed", "conclusion": "success", "started_at": "2026-10-10T10:00:00Z"}
+def passed(name: str, app: str = "osac-ci") -> dict[str, Any]:
+    return {
+        "name": name, "status": "completed", "conclusion": "success", "started_at": "2026-10-10T10:00:00Z",
+        "app": {"slug": app},
+    }  # fmt: skip
 
 
 def test_the_sum_is_written_only_when_every_needed_suite_passed() -> None:
@@ -287,16 +292,16 @@ def checked(suite: str) -> str:
 
 def test_a_member_checking_a_box_asks_for_that_suite() -> None:
     got = manual_run.read_request(comment_api(checked("caas")), REPO, 7, 9, "bob")  # type: ignore[arg-type]
-    assert got == (("caas",), "")
+    assert got == (("caas",), "", HEAD)
 
 
 def test_anyone_in_the_organization_may_ask_even_for_their_own_pull_request() -> None:
     fake = comment_api(checked("caas"))
-    assert manual_run.read_request(fake, REPO, 7, 9, "alice") == (("caas",), "")  # type: ignore[arg-type]
+    assert manual_run.read_request(fake, REPO, 7, 9, "alice") == (("caas",), "", HEAD)  # type: ignore[arg-type]
 
 
 def test_someone_outside_the_organization_is_refused_and_nothing_starts() -> None:
-    asked, refused = manual_run.read_request(comment_api(checked("caas")), REPO, 7, 9, "eve")  # type: ignore[arg-type]
+    asked, refused, _ = manual_run.read_request(comment_api(checked("caas")), REPO, 7, 9, "eve")  # type: ignore[arg-type]
     assert asked == () and "not a member" in refused
 
 
@@ -309,11 +314,15 @@ def test_someone_outside_the_organization_is_refused_and_nothing_starts() -> Non
     ],
 )
 def test_a_comment_that_is_not_this_pull_requests_control_comment_asks_for_nothing(api: Fake) -> None:
-    assert manual_run.read_request(api, REPO, 7, 9, "bob") == ((), "")  # type: ignore[arg-type]
+    assert manual_run.read_request(api, REPO, 7, 9, "bob") == ((), "", "")  # type: ignore[arg-type]
 
 
 def test_an_edit_that_unchecks_a_box_asks_for_nothing() -> None:
-    assert manual_run.read_request(comment_api(manual_run.render_comment(HEAD, views())), REPO, 7, 9, "bob") == ((), "")  # type: ignore[arg-type]
+    assert manual_run.read_request(comment_api(manual_run.render_comment(HEAD, views())), REPO, 7, 9, "bob") == (
+        (),
+        "",
+        "",
+    )  # type: ignore[arg-type]
 
 
 # creating and refreshing the comment -------------------------------------------------------------------------------
@@ -413,3 +422,91 @@ def test_a_request_by_hand_needs_a_pull_request_number(tmp_path: Path, capsys: p
     argv = ["e2e-decide", "--policy", str(policy), "--repo", REPO, "--head-sha", HEAD]
     assert cli.main([*argv, "--manual-comment-id", "9", "--manual-by", "bob"]) == 2
     assert "--number" in capsys.readouterr().err
+
+
+# the review findings -------------------------------------------------------------------------------------------------
+
+
+def test_a_check_of_another_app_with_a_suite_s_name_does_not_make_it_passed_or_running() -> None:
+    other = (line("E2E / VMaaS Full Install", "success", app="someone-else"),)
+    d = decide(inputs(requested=("vmaas",), requested_by="bob", check_runs=other))
+    assert d.starts and d.suites == ("vmaas",)
+    d = decide(inputs(reviews=approved(), check_runs=(line("E2E / VMaaS Full Install", "success", app="x"),)))
+    assert d.starts and d.suites == ("vmaas", "caas")  # not "already passed"
+
+
+def test_a_check_of_another_app_does_not_make_the_sum_green() -> None:
+    lines = {"vmaas": "E2E / VMaaS Full Install"}
+    fake = Fake([passed("E2E / VMaaS Full Install", app="someone-else")])
+    assert "left as it is" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
+
+
+def test_the_comment_does_not_show_another_app_s_check_as_the_suite() -> None:
+    runs = [passed("E2E / VMaaS Full Install", app="someone-else")]
+    assert manual_run.views_for(SUITES, runs)[0].state == "none"
+    assert manual_run.views_for(SUITES, [passed("E2E / VMaaS Full Install")])[0].state == "passed"
+
+
+def existing(state: str, external_id: str = "") -> e2e_check.Existing:
+    return e2e_check.Existing(state, "x", external_id)
+
+
+@pytest.mark.parametrize(
+    ("current", "ok"),
+    [
+        (None, True),
+        (existing("pending", "waiting"), True),  # waiting
+        (existing("failure"), True),  # a run that failed does not stop the suites passed by hand
+        (existing("error"), True),
+        (existing("success"), False),  # a pass stays
+        (existing("pending", "run:500"), False),  # a run that is running stays
+    ],
+)
+def test_the_sum_may_replace_a_wait_or_a_failure_but_not_a_pass_or_a_running_run(
+    current: e2e_check.Existing | None, ok: bool
+) -> None:
+    assert e2e_check.replaceable(current) is ok
+    entry = {"action": "already-passed", "selected_checks": {"vmaas": "E2E / VMaaS Full Install"}}
+    assert bool(e2e_check.plan(entry, current, 1, lambda rid: True).writes) is ok
+
+
+def test_a_failed_result_is_replaced_when_every_suite_has_passed_by_hand() -> None:
+    lines = {"vmaas": "E2E / VMaaS Full Install"}
+    fake = Fake(
+        [
+            passed("E2E / VMaaS Full Install"),
+            {
+                "name": "E2E",
+                "status": "completed",
+                "conclusion": "failure",
+                "id": 1,
+                "app": {"slug": "osac-ci"},
+                "output": {"title": "Failed: vmaas"},
+            },
+        ]
+    )
+    assert "green" in e2e_check.finish_by_hand(fake, REPO, HEAD, lines, "", "checks")  # type: ignore[arg-type]
+
+
+def test_a_comment_written_for_an_older_commit_cannot_start_anything() -> None:
+    from osac_ci.e2e_start import refuse_stale_request
+
+    old = "b" * 40
+    asked, refused = refuse_stale_request(("vmaas",), "", old, HEAD)
+    assert asked == () and "changed since the comment" in refused and "bbbbbbb is now aaaaaaa" in refused
+    d = decide(inputs(requested=asked, request_refused=refused))
+    assert d.action is Action.NOTHING_TO_START and not d.starts
+
+
+def test_a_comment_for_the_current_commit_or_with_no_commit_is_not_refused() -> None:
+    from osac_ci.e2e_start import refuse_stale_request
+
+    assert refuse_stale_request(("vmaas",), "", HEAD, HEAD) == (("vmaas",), "")
+    assert refuse_stale_request(("vmaas",), "", "", HEAD) == (("vmaas",), "")
+    assert refuse_stale_request((), "", "b" * 40, HEAD) == ((), "")
+
+
+def test_the_head_commit_is_in_the_comment_and_read_back() -> None:
+    body = manual_run.render_comment(HEAD, views())
+    assert f"<!-- head:{HEAD} -->" in body and manual_run.head_of(body) == HEAD
+    assert manual_run.head_of("no marker") == ""

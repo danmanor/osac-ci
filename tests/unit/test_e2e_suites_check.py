@@ -198,6 +198,23 @@ def test_without_following_a_job_that_has_a_runner_ends_the_tracking_as_before()
     assert len(world.writes) == 1 and world.line(VM)["description"] == "Running"
 
 
+def test_tracking_never_overwrites_the_line_of_a_newer_run() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    world.job("caas / e2e", "in_progress")
+    world.add(context=VM, state="pending", description="Running", target_url=NEWER_RUN_URL)  # another run owns VMaaS
+    wrote = fast(world, LINES, follow=True, timeout=2)
+    assert "vmaas" not in wrote and wrote == ["caas"]
+    assert world.line(VM)["target_url"] == NEWER_RUN_URL and world.line(VM)["description"] == "Running"
+
+
+def test_tracking_writes_the_line_its_own_run_started() -> None:
+    world = SuiteWorld()
+    world.job("vmaas / e2e", "in_progress")
+    world.add(context=VM, state="pending", description="Waiting for a runner", target_url=RUN_URL)  # this run's own
+    assert fast(world, {"vmaas": VM}, follow=True, timeout=2) == ["vmaas"]
+
+
 def test_nothing_is_written_again_when_nothing_changed() -> None:
     world = SuiteWorld()
     world.job("vmaas / e2e", "queued")

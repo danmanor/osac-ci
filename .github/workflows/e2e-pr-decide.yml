@@ -112,6 +112,11 @@ jobs:
     timeout-minutes: 10
     # One decision at a time per head commit (or per pull request when started by hand), so two runs never claim the
     # same commit together. GitHub keeps one waiting run per group, so a burst of events costs one extra decision.
+    # A checked box (issue_comment) is in its own group, by pull request number, on purpose: GitHub keeps one waiting run
+    # per group and cancels the older waiting one, so in a shared group a burst of CI events could cancel a request and
+    # the person would see a checked box that starts nothing. The two kinds of run cannot start the same suite twice in
+    # practice: the automatic start happens once per commit, and a request skips a suite whose line is already waiting or
+    # running (the report writes the lines before the suites start).
     concurrency:
       group: e2e-decide-${{ github.event.workflow_run.head_sha || github.event.inputs.number || github.event.issue.number }}
       cancel-in-progress: false

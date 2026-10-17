@@ -868,13 +868,15 @@ def main(argv: list[str] | None = None) -> int:
         def _inputs(client: GitHubClient, n: int) -> e2e_start.Inputs:
             asked: tuple[str, ...] = ()
             refused = ""
+            seen = ""
             if args.manual_comment_id is not None:
-                asked, refused = manual_run.read_request(
+                asked, refused, seen = manual_run.read_request(
                     client, args.repo, n, args.manual_comment_id, args.manual_by, org_client=build_org_client()
                 )
             return e2e_start.fetch_inputs(
-                client, policy, args.repo, n, requested=asked, requested_by=args.manual_by, request_refused=refused
-            )
+                client, policy, args.repo, n,
+                requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
+            )  # fmt: skip
 
         return _decide_command(
             args,
