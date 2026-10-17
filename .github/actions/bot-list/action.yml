@@ -1,0 +1,39 @@
+name: List the open pull requests of the update bots
+description: >-
+  Print, as a JSON list, the numbers of the open, non-draft pull requests whose author is one of the update bots named in
+  policy/flow.yml (Dependabot, Konflux). A repository's sweep (the bot-sweep workflow) runs one decision per number. The
+  bots come from the central rules of osac-ci at the pinned commit, never from the repository calling it. It reads pull
+  requests only and never checks out the calling repository.
+
+inputs:
+  github-token:
+    description: Token that can read pull requests (normally the job's built-in token)
+    required: true
+  repo:
+    description: Repository to read, owner/name
+    required: true
+
+outputs:
+  numbers:
+    description: JSON list of pull request numbers, for example [12,15]
+    value: ${{ steps.list.outputs.numbers }}
+
+runs:
+  using: composite
+  steps:
+    - name: Install uv
+      shell: bash
+      run: pipx install uv==0.11.21
+    - name: List
+      id: list
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        ACTION_PATH: ${{ github.action_path }}
+      run: |
+        set -euo pipefail
+        root="$ACTION_PATH/../../.."
+        numbers=$(uv run --locked --project "$root" osac-ci bot-list --repo "$REPO")
+        echo "numbers=${numbers}" >> "$GITHUB_OUTPUT"
+        echo "Dependency updates to look at: ${numbers}" >> "${GITHUB_STEP_SUMMARY:-/dev/null}"

@@ -223,3 +223,53 @@ def test_the_last_listed_commit_is_the_head_not_the_first() -> None:
     assert [c.sha for c in ok.commits] == ["1" * 40, SHA]
     with pytest.raises(ValueError, match="do not end at the head"):
         fetch_inputs(world(commits=(last, first)), REPO, 5)
+
+
+def listing(*items: dict[str, Any]) -> FakeGitHub:
+    fake = FakeGitHub()
+    fake.add("GET", f"{BASE}/pulls", list(items))
+    return fake
+
+
+def test_the_sweep_lists_only_open_pull_requests_of_the_update_bots() -> None:
+    from osac_ci.bot_approve import list_bot_pulls
+
+    fake = listing(
+        {"number": 9, "draft": False, "user": {"login": BOT}},
+        {"number": 4, "draft": False, "user": {"login": "red-hat-konflux-kflux-prd-rh02[bot]"}},
+        {"number": 6, "draft": True, "user": {"login": BOT}},  # a draft
+        {"number": 7, "draft": False, "user": {"login": "alice"}},  # a person
+        {"number": 8, "draft": False, "user": {"login": "mallory[bot]"}},  # another bot
+        {"number": 3, "draft": False, "user": None},  # a deleted account
+    )
+    assert list_bot_pulls(fake, REPO) == [4, 9]
+
+
+def test_the_sweep_lists_nothing_when_no_update_bot_has_a_pull_request() -> None:
+    from osac_ci.bot_approve import list_bot_pulls
+
+    assert list_bot_pulls(listing(), REPO) == []
+
+
+def test_the_sweep_refuses_a_malformed_repository_name() -> None:
+    from osac_ci.bot_approve import list_bot_pulls
+
+    with pytest.raises(ValueError):
+        list_bot_pulls(listing(), "not a repo")
+
+
+def test_the_bot_list_command_prints_a_json_list(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = listing({"number": 9, "draft": False, "user": {"login": BOT}})
+    monkeypatch.setattr(cli, "build_client", lambda **_: fake)
+    assert cli.main(["bot-list", "--repo", REPO]) == 0
+    assert json.loads(capsys.readouterr().out) == [9]
+
+
+def test_the_bot_list_command_reports_a_github_error(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "build_client", lambda **_: FakeGitHub())  # no route: the listing answers 404
+    assert cli.main(["bot-list", "--repo", REPO]) == 3
+    assert "bot-list failed" in capsys.readouterr().err
