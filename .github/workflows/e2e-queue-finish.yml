@@ -1,0 +1,88 @@
+---
+# Shared workflow: adds up the suites of a merge queue entry and writes the required `E2E` check. The merge rule requires
+# `E2E` from the OSAC CI app only, so a job of the caller named `E2E` would be a check of the Actions app and would never
+# satisfy it (the queue entry would wait until it timed out): the check is written with the app's token.
+#
+# The caller runs it after the plan and every suite job, with `if: always()`, and gives the calling job contents read.
+# `results` is the caller's `toJSON(needs)`; the job named by `plan-job` is the plan, every other one is a suite.
+# The result is `failure` when the plan did not succeed (which would otherwise skip every suite and let the entry pass
+# untested) or a suite failed or was cancelled, `cancelled` when only cancellations happened, and `success` otherwise.
+# Also after a cancel: the check is then closed at once and the entry removed, instead of waiting for a check that never
+# comes.
+name: E2E queue result
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The queue entry's commit (`github.event.merge_group.head_sha`)
+        type: string
+        required: true
+      results:
+        description: The caller's toJSON(needs)
+        type: string
+        required: true
+      plan-job:
+        description: Id of the caller's plan job
+        type: string
+        default: plan
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  finish:
+    name: Record the E2E check
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Every suite that was needed passed
+        id: sum
+        env:
+          RESULTS: ${{ inputs.results }}
+          PLAN: ${{ inputs.plan-job }}
+        run: |
+          set -euo pipefail
+          echo "suites=$(jq -r --arg p "${PLAN}" '(.[$p].outputs.suites // "[]") | fromjson | join(", ")' <<<"${RESULTS}")" >> "$GITHUB_OUTPUT"
+          plan=$(jq -r --arg p "${PLAN}" '.[$p].result // "missing"' <<<"${RESULTS}")
+          others=$(jq -r --arg p "${PLAN}" 'del(.[$p]) | [.[].result]' <<<"${RESULTS}")
+          if [[ "${plan}" == "cancelled" ]]; then
+            result=cancelled
+          elif [[ "${plan}" != "success" ]]; then
+            echo "::error::Plan did not succeed (${plan}), so no suite was selected"
+            result=failure
+          elif jq -e 'any(. == "failure")' <<<"${others}" >/dev/null; then
+            echo "::error::A suite failed"
+            result=failure
+          elif jq -e 'any(. == "cancelled")' <<<"${others}" >/dev/null; then
+            result=cancelled
+          else
+            result=success
+          fi
+          echo "result=${result}" >> "$GITHUB_OUTPUT"
+      - name: Token of the OSAC CI app, for the E2E check
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      # `$/` is this workflow's own repository at the exact commit the caller pinned.
+      - uses: $/.github/actions/e2e-finish
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          result: ${{ steps.sum.outputs.result }}
+          detail: ${{ steps.sum.outputs.suites }}

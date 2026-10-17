@@ -1,0 +1,7 @@
+# actionlint 1.7.x does not know GitHub's self-repository syntax `uses: $/path`, which means "this workflow's own
+# repository at the commit the caller pinned". The shared workflows rely on it (verified in a cross-repository call on
+# 2026-10-17), so the message is ignored here.
+paths:
+  .github/workflows/**/*.yml:
+    ignore:
+      - 'specifying action "\$/[^"]*" in invalid format because ref is missing'

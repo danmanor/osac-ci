@@ -1,0 +1,64 @@
+---
+# Shared workflow: keeps one check per E2E suite on the pull request ("E2E / VMaaS Full Install" ...), next to the single
+# `E2E` check. The suites run in the caller's run, whose jobs are not on the pull request, so this is how a person on the
+# pull request sees which suite is waiting, running or failed, and gets to its log in one click. Only the suites that run
+# get a check; which suites run, and what their checks are called, is the repository's policy.
+#
+# It must be its own call, next to the suites: a call only completes when all its jobs do, so inside the decision
+# workflow it would hold the suites back. The caller runs it with `needs: decide` and
+# `if: needs.decide.outputs.start == 'true'`, in parallel with the suite jobs, and gives the calling job `contents: read`.
+name: E2E suite checks
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit the E2E runs for (the decision's `sha`)
+        type: string
+        required: true
+      suite-checks:
+        description: The decision's `suite-checks`
+        type: string
+        required: true
+      timeout:
+        description: Seconds to track before stopping, kept below the one hour life of the app token
+        type: string
+        default: "3300"
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  track:
+    name: Suite checks
+    runs-on: ubuntu-latest
+    timeout-minutes: 140
+    permissions:
+      contents: read
+    steps:
+      # The E2E lines are check runs of the OSAC CI app, which the pull request page draws (a spinner while they run, the
+      # exact names). The token has the permissions this job needs and lasts an hour.
+      - name: Token of the OSAC CI app, for the E2E lines
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - uses: $/.github/actions/e2e-suites-track
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suite-checks: ${{ inputs.suite-checks }}
+          # The app token lives an hour: stop tracking before it expires. The lines stay as they are until the result.
+          timeout: ${{ inputs.timeout }}

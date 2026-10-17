@@ -1,0 +1,97 @@
+---
+# Shared workflow: records the result of the E2E on the pull request, whatever happened (including a cancel), so the
+# `E2E` check and the suite lines never stay "running". The caller runs it after the decision, the tracker and every
+# suite job, with `if: always() && needs.decide.outputs.start == 'true'`, and gives the calling job `contents: read`.
+#
+# `results` is the caller's `toJSON(needs)`. Every job in it that is not listed in `non-suite-jobs` is a suite: a suite
+# that ran and failed makes the result `failure`, one that was cancelled makes it `cancelled`, and a decision to start with
+# no suite that ran is a `failure` (it must never pass untested).
+name: E2E result
+
+on:
+  workflow_call:
+    inputs:
+      sha:
+        description: The commit the E2E ran for (the decision's `sha`)
+        type: string
+        required: true
+      suites:
+        description: The decision's `suites` (JSON list)
+        type: string
+        required: true
+      suite-checks:
+        description: The decision's `suite-checks`
+        type: string
+        required: true
+      results:
+        description: The caller's toJSON(needs)
+        type: string
+        required: true
+      non-suite-jobs:
+        description: Comma separated ids of the caller's jobs that are not suites
+        type: string
+        default: decide,track
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  finish:
+    name: Record the result
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Add up the suites
+        id: result
+        env:
+          RESULTS: ${{ inputs.results }}
+          SUITES: ${{ inputs.suites }}
+          NON_SUITE: ${{ inputs.non-suite-jobs }}
+        run: |
+          set -euo pipefail
+          # the suites that ran are the jobs that were not skipped; the decision and the tracker are not suites
+          ran='del(.[($non | split(","))[]]) | [.[].result] | map(select(. != "skipped"))'
+          if jq -e --arg non "${NON_SUITE}" "${ran} | any(. == \"failure\")" <<<"${RESULTS}" >/dev/null; then
+            result=failure
+          elif jq -e --arg non "${NON_SUITE}" "${ran} | any(. == \"cancelled\")" <<<"${RESULTS}" >/dev/null; then
+            result=cancelled
+          elif jq -e --arg non "${NON_SUITE}" "${ran} | length == 0" <<<"${RESULTS}" >/dev/null; then
+            # the decision said start but no suite ran: do not report a pass
+            result=failure
+          else
+            result=success
+          fi
+          echo "result=${result}" >> "$GITHUB_OUTPUT"
+          echo "suites=$(jq -r 'join(", ")' <<<"${SUITES}")" >> "$GITHUB_OUTPUT"
+      - name: Token of the OSAC CI app, for the E2E lines
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+      - uses: $/.github/actions/e2e-finish
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          result: ${{ steps.result.outputs.result }}
+          detail: ${{ steps.result.outputs.suites }}
+      - uses: $/.github/actions/e2e-suites-settle
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          kind: checks
+          repo: ${{ github.repository }}
+          sha: ${{ inputs.sha }}
+          suite-checks: ${{ inputs.suite-checks }}

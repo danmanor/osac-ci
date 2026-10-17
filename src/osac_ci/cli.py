@@ -303,6 +303,11 @@ def _parser() -> argparse.ArgumentParser:
     bot.add_argument("--json", action="store_true", help="print JSON instead of markdown")
     bot.add_argument("--json-file", type=Path, help="also write the JSON (a list, one entry per pull request) here")
 
+    botlist = sub.add_parser(
+        "bot-list", help="print, as a JSON list, the open pull requests of the update bots (the sweep looks at these)"
+    )
+    botlist.add_argument("--repo", required=True, help="owner/name")
+
     approve = sub.add_parser(
         "bot-approve",
         help="approve a dependency-update pull request when bot-decide says so, for the commit it decided on",
@@ -496,6 +501,15 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"error: lock-status failed: {exc}", file=sys.stderr)
             return 3
+        return 0
+
+    if args.command == "bot-list":
+        try:
+            numbers = bot_approve.list_bot_pulls(build_client(), args.repo)
+        except (GitHubError, ValueError) as exc:
+            print(f"error: bot-list failed: {exc}", file=sys.stderr)
+            return 3
+        print(json.dumps(numbers))
         return 0
 
     if args.command == "bot-decide":

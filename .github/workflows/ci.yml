@@ -36,6 +36,12 @@ jobs:
         run: uv run basedpyright
       - name: Workflow security lint
         run: uvx zizmor@1.30.1 --no-progress .github/workflows
+      - name: Workflow syntax lint
+        # The shared workflows use `uses: $/...` (an action of the called workflow's own repository), which actionlint
+        # does not know yet; .github/actionlint.yaml ignores exactly that message.
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint"
 
   unit-tests:
     name: unit-tests

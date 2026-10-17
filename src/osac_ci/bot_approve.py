@@ -45,6 +45,19 @@ DEPENDENCY_FILE_NAMES = flow().dependency_file_names
 DEPENDENCY_FILE_PATTERNS = _RULES.dependency_file_patterns
 
 
+def list_bot_pulls(client: GitHubClient, repo: str) -> list[int]:
+    """The numbers of the open, non-draft pull requests whose author is one of the update bots (``BOTS``). Any other
+    author is left out here, so a sweep never spends a runner on a pull request that could only be answered "not a
+    bot"."""
+    repo = check_repo(repo)
+    found = [
+        int(p["number"])
+        for p in paginate(client, f"/repos/{repo}/pulls", params={"state": "open"})
+        if not p.get("draft") and (p.get("user") or {}).get("login") in BOTS
+    ]
+    return sorted(found)
+
+
 class Action(StrEnum):
     APPROVE = "approve"
     SKIP_CLOSED = "skip-closed"
