@@ -27,6 +27,7 @@ from osac_ci import bot_approve, e2e_check, e2e_start, e2e_suites_check, lockfac
 from osac_ci import compare as compare_mod
 from osac_ci import e2e_compare as e2e_compare_mod
 from osac_ci.authorize import authorize, override, reply
+from osac_ci.flow import FlowError, flow
 from osac_ci.github.api import GitHubClient, GitHubError, HttpClient, Response, rate_remaining
 from osac_ci.github.snapshot import fetch_snapshot, parse_queue_branch
 from osac_ci.model import CheckRun, LabelEvent, Mode, Review, Snapshot
@@ -36,6 +37,7 @@ from osac_ci.publish import CHECK_NAME, describe, find_open_prs, publish_pr, pub
 from osac_ci.render import render_markdown
 from osac_ci.replay import load_explained, render, replay, to_json
 from osac_ci.report import build_report, write_all
+from osac_ci.rules_page import render_rules
 from osac_ci.stale import StaleRules
 
 TOKEN_ENV = ("GH_TOKEN", "GITHUB_TOKEN")
@@ -308,6 +310,16 @@ def _parser() -> argparse.ArgumentParser:
     )
     botlist.add_argument("--repo", required=True, help="owner/name")
 
+    rules = sub.add_parser(
+        "explain-rules",
+        help="write the page that says how a pull request merges (who approves, which bots), from policy/flow.yml",
+    )
+    rules.add_argument(
+        "--policy", type=Path, action="append", default=[], help="a repository policy file whose suites to list"
+    )
+    rules.add_argument("--output", type=Path, help="write the page here instead of printing it")
+    rules.add_argument("--check", action="store_true", help="fail when --output is not what would be written now")
+
     approve = sub.add_parser(
         "bot-approve",
         help="approve a dependency-update pull request when bot-decide says so, for the commit it decided on",
@@ -501,6 +513,30 @@ def main(argv: list[str] | None = None) -> int:
         except ValueError as exc:
             print(f"error: lock-status failed: {exc}", file=sys.stderr)
             return 3
+        return 0
+
+    if args.command == "explain-rules":
+        try:
+            page = render_rules(flow(), [load_policy(p) for p in args.policy])
+        except (FlowError, PolicyError) as exc:
+            print(f"error: explain-rules failed: {exc}", file=sys.stderr)
+            return 3
+        if args.check:
+            if args.output is None:
+                print("error: --check needs --output", file=sys.stderr)
+                return 2
+            current = args.output.read_text(encoding="utf-8") if args.output.exists() else None
+            if current != page:
+                print(
+                    f"error: {args.output} is stale; run: osac-ci explain-rules --output {args.output}", file=sys.stderr
+                )
+                return 1
+            return 0
+        if args.output is not None:
+            args.output.parent.mkdir(parents=True, exist_ok=True)
+            args.output.write_text(page, encoding="utf-8")
+            return 0
+        print(page, end="")
         return 0
 
     if args.command == "bot-list":

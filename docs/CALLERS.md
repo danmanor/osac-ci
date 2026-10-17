@@ -2,7 +2,7 @@
 
 osac-ci hosts the shared workflows of the native pull request flow, so a repository keeps only short callers, its own
 policy and its own tests. Nothing on the pull request page changes: the same `CI`, `E2E` and `jira-reference` checks, the
-same suite lines (`E2E / VMaaS Full Install` ...), the same wait reasons. The rules are in `policy/flow.yml` (who counts as
+same suite lines (`E2E / VMaaS Full Install` ...), the same wait reasons. The rules are in `policy/flow.yml` (read them as a page: [`RULES.md`](RULES.md), generated from the file) (who counts as
 an approver, which bots may be approved without a person, which checks are not "cheap"); a repository cannot change them.
 
 ## What stays in the repository
