@@ -29,25 +29,23 @@ from typing import Any
 from urllib.parse import quote
 
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
+from osac_ci.flow import flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
 from osac_ci.planner import latest_checks
 from osac_ci.policy import Policy
 
-# Bots whose approval counts whatever their association with the repository: CodeRabbit, and the OSAC CI app, which
-# approves dependency updates that need no person (see ``bot_approve``). Not on a pull request from a fork: the author
-# of a fork controls what CodeRabbit reads, and the approval starts a run of that code with secrets, so only a person
-# with write access can approve it.
-TRUSTED_BOTS = frozenset({"coderabbitai[bot]", "osac-ci[bot]"})
-# What a person's approval needs, read from their EFFECTIVE permission on the repository, not from their association
-# with it: an organization member or a collaborator can have read or triage access only, and an approval starts a run
-# of the pull request's code with secrets.
-WRITE_PERMISSIONS = frozenset({"admin", "maintain", "write"})
-# A required check that says nothing about the quality of the change: the label check, the Jira reference check that
-# replaces it, and the E2E check itself (kept by ``e2e_check``; the E2E cannot wait for its own result). (The OSAC CI
-# check, a verdict on the others, is already left out by ``required_contexts``.)
-NOT_CHEAP = frozenset({"check-labels", "jira-reference", "E2E"})
+# The rules below are read from policy/flow.yml (see osac_ci.flow), where each one is explained and pinned by a test:
+# TRUSTED_BOTS  bots whose approval counts on a branch of the repository itself, never on a fork (the author of a fork
+#               controls what CodeRabbit reads, and the approval starts a run of that code with secrets);
+# WRITE_PERMISSIONS  the effective repository roles that make a person's approval count;
+# NOT_CHEAP  required checks that say nothing about the quality of the change (the E2E cannot wait for its own result;
+#            the OSAC CI check, a verdict on the others, is already left out by ``required_contexts``).
+_FLOW = flow()
+TRUSTED_BOTS = _FLOW.trusted_bots
+WRITE_PERMISSIONS = _FLOW.write_permissions
+NOT_CHEAP = _FLOW.not_cheap
 
 
 class Action(StrEnum):

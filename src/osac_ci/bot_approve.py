@@ -30,29 +30,19 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from osac_ci.flow import flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 
-BOTS = ("dependabot[bot]", "red-hat-konflux-kflux-prd-rh02[bot]")
-GITHUB_COMMITTER = "web-flow"  # GitHub itself: the committer of a commit it signed on someone's behalf
+# The rules below are read from policy/flow.yml (see osac_ci.flow), where each one is explained and pinned by a test.
+_RULES = flow().bot_approve
+BOTS = _RULES.bots
+GITHUB_COMMITTER = _RULES.committer  # GitHub itself: the committer of a commit it signed on someone's behalf
 MAX_COMMITS = 250  # the pull request commits API lists at most this many
 MAX_FILES = 3000  # the pull request files API lists at most this many
 APPROVAL_MARKER = "<!-- osac-ci bot-approve -->"  # in the body of every approval made here: a repeat is not stacked
 
-DEPENDENCY_FILE_NAMES = frozenset(
-    {
-        "go.mod",
-        "go.sum",
-        "package.json",
-        "package-lock.json",
-        "pnpm-lock.yaml",
-        "yarn.lock",
-        "uv.lock",
-        "poetry.lock",
-        "Pipfile.lock",
-        "pyproject.toml",
-    }
-)
-DEPENDENCY_FILE_PATTERNS = ("Containerfile*", "Dockerfile*", "requirements*.txt")
+DEPENDENCY_FILE_NAMES = flow().dependency_file_names
+DEPENDENCY_FILE_PATTERNS = _RULES.dependency_file_patterns
 
 
 class Action(StrEnum):

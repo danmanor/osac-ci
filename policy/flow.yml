@@ -1,0 +1,72 @@
+# The rules of the native pull request flow, in one place that anyone can read.
+#
+# These are the rules osac-ci applies for every repository that uses the shared flow (osac, osac-test-infra, ...): who
+# counts as an approver, which checks do not count as "cheap", and when a bot may approve a dependency update without a
+# person. They used to be constants inside the Python code. They moved here so that a reviewer can read them and change
+# them in a pull request, and a test (tests/unit/test_flow.py) pins every value, so a change is always deliberate.
+#
+# Changing this file changes who can start a 100-minute E2E run with the repository's secrets, or approve a pull
+# request without a person reading it. It needs a review by @osac-project/wg-infra (see CODEOWNERS). A repository CANNOT
+# change these rules in its own files: only the keys listed under `repository_may_extend` at the bottom can be added to.
+version: 1
+
+# --- Who may start an E2E, and whose approval counts ------------------------------------------------------------------
+approval:
+  # Bots whose approval counts on a pull request from a branch of the repository itself, whatever their association with
+  # the organization: CodeRabbit, and the OSAC CI app, which approves dependency updates that need no person (see
+  # `bot_approve` below). Never on a pull request from a fork: the author of a fork controls what CodeRabbit reads, and
+  # the approval starts a run of that code with secrets, so only a person with write access can approve a fork.
+  trusted_bots:
+    - coderabbitai[bot]
+    - osac-ci[bot]
+  # What a person's approval needs, read from their EFFECTIVE permission on the repository (not from their association
+  # with the organization: a member or a collaborator can have read or triage access only). Only these three count,
+  # because an approval starts a run of the pull request's code with secrets. "triage" and "read" are rejected.
+  write_permissions:
+    - admin
+    - maintain
+    - write
+
+# --- Which checks do not count as "cheap" -----------------------------------------------------------------------------
+checks:
+  # A required check that says nothing about the quality of the change: the old label check, the Jira reference check,
+  # and the E2E check itself (the E2E cannot wait for its own result). The E2E starts when no OTHER required check has
+  # failed on the commit.
+  not_cheap:
+    - check-labels
+    - jira-reference
+    - E2E
+
+# --- When a bot may approve a dependency update without a person ------------------------------------------------------
+bot_approve:
+  # The two update bots. A pull request by any other author is never approved here.
+  bots:
+    - dependabot[bot]
+    - red-hat-konflux-kflux-prd-rh02[bot]
+  # Besides the bot itself, the only committer a commit may have: GitHub, when it signed the commit for the bot.
+  committer: web-flow
+  # Every changed file must be a dependency file: a manifest, a lock file or a container file. A change to a workflow, a
+  # script or a source file is never approved without a person, whoever wrote it. File names are matched on the base
+  # name; patterns are shell-style (fnmatch) on the base name.
+  dependency_file_names:
+    - go.mod
+    - go.sum
+    - package.json
+    - package-lock.json
+    - pnpm-lock.yaml
+    - yarn.lock
+    - uv.lock
+    - poetry.lock
+    - Pipfile.lock
+    - pyproject.toml
+  dependency_file_patterns:
+    - "Containerfile*"
+    - "Dockerfile*"
+    - "requirements*.txt"
+
+# --- What a repository may add in its own policy file -----------------------------------------------------------------
+# A repository keeps its own data (suites, path filters, tests) in its own files. Of the rules above it may only add
+# check names to `checks.not_cheap`, through `flow.checks.not_cheap_extra` in its policy file. Everything else is
+# refused with an error that names the key, so a repository cannot widen who starts an E2E or what a bot approves.
+repository_may_extend:
+  - checks.not_cheap_extra
