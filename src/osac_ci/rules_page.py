@@ -71,6 +71,19 @@ only from:
 The author cannot approve their own pull request. A push after the approval dismisses it; a rebase that changes nothing
 of the pull request's own changes keeps it, a rebase with conflict resolution drops it.
 
+## Starting suites by hand
+
+Besides the automatic start, osac-ci keeps one comment on a pull request of a member of the organization, with a
+checkbox for each E2E suite of the repository (and the ones that are only ever started by hand). **Any member of the
+organization** can check a box, whatever the approval state: on a draft, on a fork, and on their own pull request. The
+suite then runs for the head commit, with the repository's secrets, the same way an approved one does. The box clears
+itself and the comment says what became of the request. A suite that is already running, or has already passed on that
+commit, is not started again.
+
+A run started by hand writes only the line of its suite (`E2E / <suite>`). The required `E2E` check does not follow it
+until **every** suite the change needs has passed (by hand or by the approval); a suite that failed is shown on its own
+line and the `E2E` check stays as it was. An approval later runs only what has not passed yet.
+
 ## Checks that do not count as cheap
 
 The E2E starts when no other required check has failed on the commit. These checks say nothing about the quality of the

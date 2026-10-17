@@ -32,8 +32,11 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from osac_ci.e2e_start import line_state
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, paginate
 from osac_ci.github.snapshot import COMMIT_SHA
+from osac_ci.model import CheckRun
+from osac_ci.planner import latest_checks
 
 CONTEXT = "E2E"
 CREATOR = "github-actions[bot]"  # who a workflow's built-in token writes statuses as
@@ -205,6 +208,20 @@ def _not_affected(existing: Existing | None) -> Outcome:
     return Outcome("not-affected", False, (Write("success", NOT_AFFECTED_TITLE),))
 
 
+def _already_passed(entry: Mapping[str, Any], existing: Existing | None) -> Outcome:
+    """Every suite the change needs passed on this commit (run by hand): the E2E is the sum of them. A result that is
+    already there stays."""
+    if existing is not None and existing.phase is not Phase.WAITING:
+        return Outcome("already-ran", False, note="a result is already on this commit")
+    names = ", ".join(_selected(entry))
+    return Outcome("already-passed", False, (Write("success", describe(f"Passed: {names}")),))
+
+
+def _selected(entry: Mapping[str, Any]) -> tuple[str, ...]:
+    raw = entry.get("selected_checks") or {}
+    return tuple(str(k) for k in raw) if isinstance(raw, Mapping) else ()
+
+
 def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive: Callable[[int], bool]) -> Outcome:
     """What to do for one decision, given the newest ``E2E`` status on the commit. ``alive`` says whether a workflow
     run is still going; it is only asked when the answer depends on it."""
@@ -213,7 +230,14 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
         return Outcome("ignored", False, note="the pull request is closed")
     if action == "skip-not-applicable":
         return _not_affected(existing)
+    if action == "already-passed":
+        return _already_passed(entry, existing)
+    if action == "nothing-to-start":
+        return Outcome("ignored", False, note=str(entry.get("reason", "")))
     if action == "start":
+        if entry.get("manual"):
+            # started by hand: only the suites' lines change; the E2E check is not claimed (see finish_by_hand)
+            return Outcome("running", True, note="started by hand")
         return _start(entry, existing, run_id, alive)
     return _waiting(entry, existing, alive)
 
@@ -378,7 +402,11 @@ def report(
     for write in outcome.writes:
         write_status(client, repo, sha, write, run_url, kind)
     number = int(entry["number"])
-    if outcome.start:
+    by_hand = bool(entry.get("manual"))
+    if outcome.start and by_hand:
+        for _suite, line in lines:
+            post_status(client, repo, sha, line, "waiting", "Waiting for a runner", run_url, kind)
+    elif outcome.start:
         # Two runs for the same commit can both have read "no claim yet". Look again after writing: if the newest status
         # is not this run's, another run claimed the E2E in between and this one must not start the suites. The calling
         # workflow must also run one decision at a time per commit; this look only narrows the window.
@@ -402,6 +430,38 @@ def finish(
     title = {"success": "Passed", "failure": "Failed", "cancelled": "Cancelled"}[result]
     state = {"success": "success", "failure": "failure", "cancelled": "error"}[result]
     write_status(client, repo, sha, Write(state, f"{title}: {detail}" if detail else title), run_url, kind)
+
+
+def suite_states(client: GitHubClient, repo: str, sha: str, lines: Mapping[str, str]) -> dict[str, str]:
+    """For each suite (id -> line name), what its line says on the commit: none, active, passed or failed."""
+    runs = tuple(
+        CheckRun(raw["name"], raw["status"], raw.get("conclusion"), raw.get("started_at"))
+        for raw in paginate(client, f"/repos/{check_repo(repo)}/commits/{check_sha(sha)}/check-runs", key="check_runs")
+    )
+    latest = latest_checks(runs)
+    return {suite: line_state(latest, line) for suite, line in lines.items()}
+
+
+def finish_by_hand(
+    client: GitHubClient, repo: str, sha: str, selected: Mapping[str, str], run_url: str, kind: str = "checks"
+) -> str:
+    """After a run started by hand: the E2E check is the sum of the suites the change needs, so it turns green only when
+    every one of them has passed (run by hand or by the approval). Anything less leaves it as it is: a partial run never
+    makes the required check pass, and a failure here is shown on the suite's own line, not as a result of the E2E."""
+    if kind != "checks":
+        raise ValueError("runs started by hand write check runs: the kind must be checks")
+    lines = validate_lines(selected)
+    if not lines:
+        return "nothing selected: the E2E check is left as it is"
+    states = suite_states(client, repo, sha, lines)
+    if any(state != "passed" for state in states.values()):
+        left = ", ".join(s for s, state in states.items() if state != "passed")
+        return f"not every suite has passed yet ({left}): the E2E check is left as it is"
+    existing = latest_check(client, repo, sha, kind)
+    if existing is not None and existing.phase is not Phase.WAITING:
+        return "the E2E check already has its answer"
+    write_status(client, repo, sha, Write("success", describe(f"Passed: {', '.join(lines)}")), run_url, kind)
+    return "every suite passed: the E2E check is green"
 
 
 # rendering ------------------------------------------------------------------------------------------------------

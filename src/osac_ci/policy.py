@@ -90,6 +90,13 @@ class Job(_Strict):
     )
     suite: str | None = None
     markers: str | None = None
+    manual_only: bool = Field(
+        default=False,
+        description=(
+            "A suite that is listed in the control comment of the pull request and started by hand, but never chosen "
+            "by the decision and not part of the sum the required E2E check stands for"
+        ),
+    )
 
     @field_validator("required_at")
     @classmethod
@@ -104,6 +111,8 @@ class Job(_Strict):
     def _readiness_only_for_e2e(self) -> Job:
         if self.needs_readiness and self.kind != "e2e":
             raise ValueError("needs_readiness is only valid for kind: e2e")
+        if self.manual_only and self.kind != "e2e":
+            raise ValueError("manual_only is only valid for kind: e2e")
         return self
 
 

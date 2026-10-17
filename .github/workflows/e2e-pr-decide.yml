@@ -20,11 +20,18 @@
 #   clean-relay         deletes the finished review relay run, whose row would stay on the pull request;
 #   tidy-jira-reference deletes the older runs of the Jira reference check of the commit, keeping the newest.
 #
+# Suites by hand: besides the automatic start, the decide job keeps one comment on the pull request (written by the OSAC CI
+# app, for a pull request of a member of the organization) that lists the E2E suites with a checkbox each. A member of the
+# organization who checks a box starts that suite for the head commit, whatever the approval state (a draft, a fork and
+# the member's own pull request included). The box clears itself, and the comment says what became of the request. A
+# suite that is running or has passed on the commit is not started again. A run started by hand never claims the `E2E`
+# check: it writes the suite lines, and the `E2E` check turns green only when every suite the change needs has passed.
+#
 # What the caller must do (the contract):
-#   * trigger on `workflow_run` of its CI workflow and of its review relay (types requested, completed), and on
-#     `workflow_dispatch` with a `number` input;
-#   * set `run-name` to `E2E <head repository>:<head branch> @ <head sha>` (the cancel step reads run titles, because a run
-#     of a workflow_run belongs to the default branch, not to the pull request commit);
+#   * trigger on `workflow_run` of its CI workflow and of its review relay (types requested, completed), on
+#     `workflow_dispatch` with a `number` input, and on `issue_comment` (type edited, for the boxes of the comment);
+#   * set `run-name` to `E2E <head repository>:<head branch> @ <head sha>` for a `workflow_run` (the cancel step reads run
+#     titles, because a run of a workflow_run belongs to the default branch, not to the pull request commit);
 #   * give the calling job at least these permissions: contents read, pull-requests read, checks read, actions write;
 #   * pass the secret OSAC_CI_APP_PRIVATE_KEY explicitly (never `secrets: inherit`).
 name: E2E pull request decision
@@ -79,6 +86,12 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
         value: ${{ jobs.decide.outputs.fork-author }}
       fork-association:
         value: ${{ jobs.decide.outputs.fork-association }}
+      manual:
+        description: '"true" when the run was started by hand (a box of the control comment): the finish workflow then sums up'
+        value: ${{ jobs.decide.outputs.manual }}
+      selected-checks:
+        description: JSON object, suite id -> line name, of every suite the change needs (for the finish workflow)
+        value: ${{ jobs.decide.outputs.selected-checks }}
 
 permissions: {}
 
@@ -86,16 +99,21 @@ jobs:
   decide:
     name: Decide
     # A finished run only matters when it belongs to a pull request (not to the merge queue or a push to main).
+    # An edit of the control comment by a person (the app's own edits are skipped, or its clearing of a box would wake this
+    # workflow again).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.event == 'pull_request' ||
-      github.event.workflow_run.event == 'pull_request_review'
+      github.event.workflow_run.event == 'pull_request_review' ||
+      (github.event_name == 'issue_comment' && github.event.action == 'edited' && github.event.issue.pull_request &&
+       github.event.sender.login != 'osac-ci[bot]' && github.event.comment.user.login == 'osac-ci[bot]' &&
+       contains(github.event.comment.body, '<!-- osac-ci:manual-run -->'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # One decision at a time per head commit (or per pull request when started by hand), so two runs never claim the
     # same commit together. GitHub keeps one waiting run per group, so a burst of events costs one extra decision.
     concurrency:
-      group: e2e-decide-${{ github.event.workflow_run.head_sha || github.event.inputs.number }}
+      group: e2e-decide-${{ github.event.workflow_run.head_sha || github.event.inputs.number || github.event.issue.number }}
       cancel-in-progress: false
     permissions:
       contents: read  # check out the policy and the path filters of the default branch, and osac-ci itself
@@ -114,6 +132,8 @@ jobs:
       approved: ${{ steps.approved.outputs.yes }}
       approved-number: ${{ steps.approved.outputs.number }}
       approved-sha: ${{ steps.approved.outputs.sha }}
+      manual: ${{ steps.by-hand.outputs.manual }}
+      selected-checks: ${{ steps.by-hand.outputs.selected }}
     steps:
       # The repository that called this workflow, at its default branch (the ref a workflow_run runs at), never the pull
       # request: only its policy and path filters.
@@ -124,6 +144,21 @@ jobs:
             ${{ inputs.filters-file }}
           sparse-checkout-cone-mode: false
           persist-credentials: false
+      # The E2E lines and the control comment are written by the OSAC CI app, and it reads who is a member of the
+      # organization. The suite lines are check runs of the app, which the pull request page draws (a spinner while they
+      # run, the exact names); a check run written with this workflow's own token would be attached to whichever Actions
+      # check suite of the commit is oldest, and the page does not draw those. The token has the permissions this job
+      # needs and lasts an hour.
+      - name: Token of the OSAC CI app
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-checks: write
+          permission-actions: read
+          permission-issues: write
+          permission-members: read
       # `$/` is this workflow's own repository at the exact commit the caller pinned, so the actions used here are the ones
       # that were reviewed with this file (a plain `./` would resolve against the caller's workspace).
       - uses: $/.github/actions/e2e-decide
@@ -132,20 +167,11 @@ jobs:
           github-token: ${{ github.token }}
           repo: ${{ github.repository }}
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
-          number: ${{ github.event.inputs.number }}
+          number: ${{ github.event.inputs.number || github.event.issue.number }}
           head-sha: ${{ github.event.workflow_run.head_sha }}
-      # The E2E lines are check runs of the OSAC CI app, which the pull request page draws (a spinner while they run, the
-      # exact names). A check run written with this workflow's own token would be attached to whichever Actions check
-      # suite of the commit is oldest, and the page does not draw those. The token has the permissions this job needs and
-      # lasts an hour.
-      - name: Token of the OSAC CI app, for the E2E lines
-        id: app-token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
-        with:
-          app-id: ${{ inputs.app-id }}
-          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
-          permission-checks: write
-          permission-actions: read
+          org-token: ${{ steps.app-token.outputs.token }}
+          manual-comment-id: ${{ github.event_name == 'issue_comment' && github.event.comment.id || '' }}
+          manual-by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
       - uses: $/.github/actions/e2e-report
         id: report
         with:
@@ -153,6 +179,30 @@ jobs:
           kind: checks
           repo: ${{ github.repository }}
           decision-file: ${{ steps.decide.outputs.json-file }}
+      # A run started by hand, and the suites the change needs (the finish workflow sums them up).
+      - name: Was it started by hand?
+        id: by-hand
+        if: steps.decide.outputs.number != ''
+        env:
+          DECISION: ${{ steps.decide.outputs.json-file }}
+        run: |
+          {
+            echo "manual=$(jq -r '.[0].manual // false' "${DECISION}")"
+            echo "selected=$(jq -c '.[0].selected_checks // {}' "${DECISION}")"
+          } >> "$GITHUB_OUTPUT"
+      # The control comment: created when the pull request has none, refreshed with what the suite lines say now, and the
+      # answer to a request. A failure here must not hold up the E2E.
+      - uses: $/.github/actions/manual-comment
+        if: steps.decide.outputs.number != ''
+        continue-on-error: true
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          org-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          number: ${{ steps.decide.outputs.number }}
+          policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
+          decision-file: ${{ steps.decide.outputs.json-file }}
+          by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
       # The pull request has an approval that counts on its head commit: the auto-merge job below turns auto-merge on.
       # Decided from the state, not from the event that woke this run: several runs for one commit replace each other, and
       # the one that survives may be any of them.
@@ -195,7 +245,7 @@ jobs:
       # that found the pull request still at this commit gets here, so a late event for an old commit cancels nothing.
       # The caller's workflow file is found from `github.workflow_ref` (in a called workflow it names the caller).
       - name: Cancel the E2E of older commits
-        if: steps.report.outputs.number != ''
+        if: steps.report.outputs.number != '' && steps.by-hand.outputs.manual != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
