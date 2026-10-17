@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
 from osac_ci import yamlio
+from osac_ci.flow import FlowError, extend, flow
 from osac_ci.paths import any_match
 from osac_ci.rules.labels import QUEUE_BLOCKING_LABELS, REQUIRED_LABELS
 
@@ -284,6 +285,17 @@ class Policy(_Strict):
     locks: dict[str, Lock] = Field(default_factory=dict)
     default_locks: tuple[str, ...] = ()
     jobs: dict[str, Job]
+    # What the repository adds to the central rules of policy/flow.yml: only `checks.not_cheap_extra` (check names that
+    # are not "cheap"). Anything else is refused when the policy loads.
+    flow: dict[str, Any] | None = None
+
+    @model_validator(mode="after")
+    def _flow_extension_is_allowed(self) -> Policy:
+        try:
+            extend(flow(), self.flow)
+        except FlowError as e:
+            raise ValueError(str(e)) from e
+        return self
 
     @model_validator(mode="after")
     def _e2e_unlock_is_consistent(self) -> Policy:

@@ -108,6 +108,8 @@ def test_the_environment_can_name_another_file(monkeypatch: pytest.MonkeyPatch, 
         ("dependency_file_names: [go.mod]", "dependency_file_names: ['*.mod']", "base names"),
         ('dependency_file_patterns: ["Dockerfile*"]', 'dependency_file_patterns: ["*"]', "far too much"),
         ('dependency_file_patterns: ["Dockerfile*"]', 'dependency_file_patterns: ["*.sh"]', "far too much"),
+        ('dependency_file_patterns: ["Dockerfile*"]', 'dependency_file_patterns: ["?*.sh"]', "far too much"),
+        ('dependency_file_patterns: ["Dockerfile*"]', 'dependency_file_patterns: ["[a-z]*"]', "far too much"),
         ("repository_may_extend: [checks.not_cheap_extra]", "repository_may_extend: [approval.trusted_bots]", "only"),
         ("committer: web-flow", "committer: ''", "must not be empty"),
     ],
@@ -164,3 +166,22 @@ def test_the_extra_checks_must_be_names() -> None:
         extend(flow(), {"checks": {"not_cheap_extra": [1]}})
     with pytest.raises(FlowError, match="invalid"):
         extend(flow(), {"checks": {"not_cheap_extra": [" padded "]}})
+
+
+def test_the_wheel_carries_the_rules_file_next_to_the_code() -> None:
+    import tomllib
+
+    root = Path(__file__).resolve().parents[2]
+    build = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))["tool"]["hatch"]["build"]["targets"]
+    assert build["wheel"]["force-include"] == {"policy/flow.yml": "osac_ci/flow.yml"}
+
+
+def test_a_packaged_copy_is_preferred_to_the_checkout(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    import osac_ci.flow as flow_module
+
+    package = tmp_path / "osac_ci"
+    package.mkdir()
+    (package / "flow.yml").write_text(GOOD, encoding="utf-8")
+    monkeypatch.delenv(FLOW_FILE_ENV, raising=False)
+    monkeypatch.setattr(flow_module, "__file__", str(package / "flow.py"))
+    assert default_flow_path() == package / "flow.yml"

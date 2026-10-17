@@ -29,7 +29,7 @@ from typing import Any
 from urllib.parse import quote
 
 from osac_ci.compare import Requirement, fetch_statuses, required_contexts, unmet
-from osac_ci.flow import flow
+from osac_ci.flow import extend, flow
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun, JobStatus, Snapshot
 from osac_ci.paths import filters_hold
@@ -296,7 +296,8 @@ def fetch_inputs(
     gates = {s.check for s in suites}
     if required is None:
         required = required_contexts(client, repo, branch or str(pr["base"]["ref"]))
-    cheap = tuple(r for r in required if r.context not in gates and r.context not in NOT_CHEAP)
+    not_cheap = extend(flow(), policy.flow).not_cheap  # the central rules plus what this repository added
+    cheap = tuple(r for r in required if r.context not in gates and r.context not in not_cheap)
     reviews = tuple(
         Review(
             user=raw["user"]["login"],

@@ -372,3 +372,11 @@ def test_a_failure_to_read_the_statuses_is_an_error_not_a_start() -> None:
     fake.add("GET", f"{BASE}/commits/{SHA}/status", {"message": "boom"}, status=500)
     with pytest.raises(GitHubError):
         fetch_inputs(fake, POLICY, REPO, 7)
+
+
+def test_a_check_the_repository_marks_as_not_cheap_does_not_block_the_e2e() -> None:
+    required = ("pre-commit", "deploy-preview", "jira-reference", "E2E")
+    fake = world(checks=(check("pre-commit"), check("deploy-preview", "failure")), required=required)
+    assert [r.context for r in fetch_inputs(fake, POLICY, REPO, 7).cheap] == ["pre-commit", "deploy-preview"]
+    own = POLICY.model_copy(update={"flow": {"checks": {"not_cheap_extra": ["deploy-preview"]}}})
+    assert [r.context for r in fetch_inputs(fake, own, REPO, 7).cheap] == ["pre-commit"]

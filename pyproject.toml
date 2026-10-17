@@ -31,6 +31,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/osac_ci"]
 
+# The rules file lives in policy/ so a reviewer finds it; the wheel carries a copy next to the code (see flow.py).
+[tool.hatch.build.targets.wheel.force-include]
+"policy/flow.yml" = "osac_ci/flow.yml"
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["tests", "tests/contract"]

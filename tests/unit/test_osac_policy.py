@@ -1,6 +1,7 @@
 """The OSAC policy must stay equal to what the live ruleset requires (ruleset drift guard, design task T11)."""
 
 import json
+from pathlib import Path
 
 import pytest
 from helpers import ROOT
@@ -40,3 +41,25 @@ def test_the_only_jobs_beyond_the_ruleset_are_the_osac_ui_ones(osac_policy) -> N
     assert extra == {"Lint", "Lint proxy (Go)", "Typecheck", "Run unit tests (osac-ui)"}
     assert extra.isdisjoint(_ruleset_contexts())
     assert all(j.paths == ("osac-ui/**",) for j in osac_policy.jobs.values() if _folder_scoped(j))
+
+
+def test_a_policy_can_add_checks_that_are_not_cheap_and_nothing_else_of_the_central_rules(tmp_path: Path) -> None:
+    import shutil
+
+    from osac_ci.policy import PolicyError, load_policy
+
+    shutil.copy(ROOT / "policy" / "osac-filters.yml", tmp_path / "osac-filters.yml")
+    base = (ROOT / "policy" / "osac.yml").read_text(encoding="utf-8")
+
+    def loaded(extra: str):
+        path = tmp_path / "osac.yml"
+        path.write_text(base + extra, encoding="utf-8")
+        return load_policy(path)
+
+    assert loaded("\nflow:\n  checks:\n    not_cheap_extra: [deploy-preview]\n").flow == {
+        "checks": {"not_cheap_extra": ["deploy-preview"]}
+    }
+    with pytest.raises(PolicyError, match="central rules"):
+        loaded("\nflow:\n  approval:\n    trusted_bots: ['mallory[bot]']\n")
+    with pytest.raises(PolicyError, match="central rules"):
+        loaded("\nflow:\n  checks:\n    not_cheap: []\n")

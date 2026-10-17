@@ -112,11 +112,11 @@ class BotApprove(_Strict):
     @classmethod
     def _patterns(cls, v: tuple[str, ...]) -> tuple[str, ...]:
         _non_empty(v, "bot_approve.dependency_file_patterns")
-        bad = [p for p in v if "/" in p or p.strip("*?") == "" or p.startswith("*")]
+        bad = [p for p in v if not p or "/" in p or p[0] in "*?["]
         if bad:
             raise ValueError(
-                "bot_approve.dependency_file_patterns match the base name and must start with a literal part "
-                f"(a pattern such as '*' or '*.sh' would approve far too much): {bad}"
+                "bot_approve.dependency_file_patterns match the base name and must start with a literal character "
+                f"(a pattern such as '*', '*.sh', '?*.sh' or '[a-z]*' would approve far too much): {bad}"
             )
         return v
 
@@ -161,10 +161,14 @@ class Flow(_Strict):
 
 
 def default_flow_path() -> Path:
-    """The rules file of this checkout (``policy/flow.yml`` next to ``src/``), or the one named by the environment."""
+    """The rules file: the one named by the environment, else the copy shipped inside the package (a wheel install),
+    else ``policy/flow.yml`` next to ``src/`` (a checkout, where it is also what a reviewer reads)."""
     override = os.environ.get(FLOW_FILE_ENV)
     if override:
         return Path(override)
+    packaged = Path(__file__).resolve().parent / "flow.yml"
+    if packaged.is_file():
+        return packaged
     return Path(__file__).resolve().parents[2] / "policy" / "flow.yml"
 
 
