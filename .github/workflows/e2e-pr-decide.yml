@@ -158,6 +158,7 @@ jobs:
           permission-checks: write
           permission-actions: read
           permission-issues: write
+          permission-pull-requests: write  # a comment on a pull request needs this one, not only issues
           permission-members: read
       # `$/` is this workflow's own repository at the exact commit the caller pinned, so the actions used here are the ones
       # that were reviewed with this file (a plain `./` would resolve against the caller's workspace).
