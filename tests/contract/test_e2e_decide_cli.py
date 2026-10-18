@@ -387,7 +387,8 @@ def test_a_check_the_repository_marks_as_not_cheap_does_not_block_the_e2e() -> N
 
 def finished_world() -> FakeGitHub:
     """Approved, and the E2E check already has its answer: the automatic path then starts every suite again."""
-    return world(reviews=(approval(),), checks=(check("pre-commit"), check("E2E", "success")))
+    answer = {**check("E2E", "success"), "app": {"id": APP, "slug": "osac-ci"}}  # only the app's own check counts
+    return world(reviews=(approval(),), checks=(check("pre-commit"), answer))
 
 
 def test_a_pull_request_that_is_approved_and_answered_runs_everything_again_for_an_ordinary_event() -> None:
