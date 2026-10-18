@@ -163,7 +163,8 @@ jobs:
     # A finished run only matters when it belongs to a pull request (not to the merge queue or a push to main).
     # An edit of the control comment by a person (the app's own edits are skipped, or its clearing of a box would wake this
     # workflow again), or a new comment of a person that starts with /test (the program reads the exact command; a comment
-    # that only starts like it is decided like any other event and starts nothing by hand).
+    # that only starts like it, such as /testing, or an edit that unchecks a box, asks for nothing and is ignored: it never
+    # reaches the automatic path, which would start every suite again once the E2E check has an answer).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.event == 'pull_request' ||

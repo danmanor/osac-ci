@@ -56,6 +56,7 @@ class Action(StrEnum):
     SKIP_CLOSED = "skip-closed"
     SKIP_DRAFT = "skip-draft"
     SKIP_NOT_APPLICABLE = "skip-not-applicable"
+    SKIP_NOT_A_REQUEST = "skip-not-a-request"  # a comment woke the decision and asks for nothing: nothing is decided
     WAIT_APPROVAL = "wait-approval"
     BLOCKED_CHANGES_REQUESTED = "blocked-changes-requested"
     BLOCKED_CHEAP_FAILED = "blocked-cheap-checks-failed"
@@ -116,6 +117,11 @@ class Inputs:
     requested_by: str = ""
     # Why a request was refused before the decision (the person is not a member): shown in the comment, nothing starts.
     request_refused: str = ""
+    # The decision was woken by a comment (an edit of the control comment, or a new one) that asks for nothing and is
+    # not refused: a comment is not an approval or a push, so nothing is decided for it. Without this, any comment that
+    # only starts like the command (`/testing`) would fall through to the automatic path, which starts every suite
+    # again once the E2E check has an answer.
+    comment_ignored: bool = False
 
 
 @dataclass(frozen=True)
@@ -257,6 +263,13 @@ def decide(inputs: Inputs) -> Decision:
     selected = tuple((s.name, s.check) for s in applicable_suites(inputs))
     if inputs.requested or inputs.request_refused:
         return _decide_by_hand(inputs, base, latest, selected)
+    if inputs.comment_ignored:
+        return Decision(
+            action=Action.SKIP_NOT_A_REQUEST,
+            reason="the comment asks for nothing, so nothing is decided for it",
+            selected_checks=selected,
+            **base,
+        )
     if inputs.draft:
         return Decision(action=Action.SKIP_DRAFT, reason="the pull request is a draft", **base)
     needed = applicable_suites(inputs)
@@ -420,6 +433,7 @@ def fetch_inputs(
     requested_by: str = "",
     request_refused: str = "",
     request_sha: str = "",
+    comment_given: bool = False,
 ) -> Inputs:
     """Read what ``decide`` needs. ``required`` is the branch's required checks when the caller already has them (a run
     over many pull requests reads them once)."""
@@ -487,6 +501,7 @@ def fetch_inputs(
         requested=requested,
         requested_by=requested_by,
         request_refused=request_refused,
+        comment_ignored=comment_given and not requested and not request_refused,
     )
 
 

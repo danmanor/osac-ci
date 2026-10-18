@@ -239,6 +239,8 @@ def plan(entry: Mapping[str, Any], existing: Existing | None, run_id: int, alive
         return _not_affected(existing)
     if action == "already-passed":
         return _already_passed(entry, existing)
+    if action == "skip-not-a-request":
+        return Outcome("ignored", False, note="the comment asks for nothing")
     if action == "nothing-to-start":
         return Outcome("ignored", False, note=str(entry.get("reason", "")))
     if action == "start":

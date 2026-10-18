@@ -881,6 +881,7 @@ def main(argv: list[str] | None = None) -> int:
             return e2e_start.fetch_inputs(
                 client, policy, args.repo, n,
                 requested=asked, requested_by=args.manual_by, request_refused=refused, request_sha=seen,
+                comment_given=args.manual_comment_id is not None,
             )  # fmt: skip
 
         return _decide_command(

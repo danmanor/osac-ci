@@ -380,3 +380,56 @@ def test_a_check_the_repository_marks_as_not_cheap_does_not_block_the_e2e() -> N
     assert [r.context for r in fetch_inputs(fake, POLICY, REPO, 7).cheap] == ["pre-commit", "deploy-preview"]
     own = POLICY.model_copy(update={"flow": {"checks": {"not_cheap_extra": ["deploy-preview"]}}})
     assert [r.context for r in fetch_inputs(fake, own, REPO, 7).cheap] == ["pre-commit"]
+
+
+# a comment that asks for nothing -----------------------------------------------------------------------------------
+
+
+def finished_world() -> FakeGitHub:
+    """Approved, and the E2E check already has its answer: the automatic path then starts every suite again."""
+    return world(reviews=(approval(),), checks=(check("pre-commit"), check("E2E", "success")))
+
+
+def test_a_pull_request_that_is_approved_and_answered_runs_everything_again_for_an_ordinary_event() -> None:
+    d = decide(fetch_inputs(finished_world(), POLICY, REPO, 7))
+    assert d.action is Action.START  # the reason a stray comment must not reach this path
+
+
+def test_a_comment_that_asks_for_nothing_decides_nothing() -> None:
+    inputs = fetch_inputs(finished_world(), POLICY, REPO, 7, comment_given=True)
+    assert inputs.comment_ignored
+    d = decide(inputs)
+    assert d.action is Action.SKIP_NOT_A_REQUEST and not d.starts and d.suites == ()
+
+
+def test_a_comment_that_asks_for_something_or_is_refused_is_not_ignored() -> None:
+    asked = fetch_inputs(
+        finished_world(), POLICY, REPO, 7, comment_given=True, requested=("vmaas",), requested_by="bob"
+    )
+    refused = fetch_inputs(finished_world(), POLICY, REPO, 7, comment_given=True, request_refused="not a member")
+    assert not asked.comment_ignored and not refused.comment_ignored
+    assert decide(refused).action is Action.NOTHING_TO_START
+
+
+def test_an_event_without_a_comment_is_decided_as_before() -> None:
+    assert not fetch_inputs(finished_world(), POLICY, REPO, 7).comment_ignored
+
+
+def test_the_command_ignores_a_comment_that_only_starts_like_the_command(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    fake = finished_world()
+    fake.add(
+        "GET",
+        f"{BASE}/issues/comments/9",
+        {
+            "id": 9,
+            "user": {"login": "eve", "type": "User"},
+            "body": "/testing foo",
+            "issue_url": "https://api/x/issues/7",
+        },
+    )
+    monkeypatch.setattr(cli, "build_org_client", lambda **_: fake)
+    assert cli_run(monkeypatch, fake, "--number", "7", "--manual-comment-id", "9", "--manual-by", "eve") == 0
+    out = capsys.readouterr().out
+    assert "**skip-not-a-request**" in out and "**start**" not in out

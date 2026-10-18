@@ -554,3 +554,8 @@ def test_a_claim_nobody_overtook_starts() -> None:
     world = World()
     found = run_report(world, entry("start"))
     assert found.start and latest_check(world, REPO, SHA) == Existing("pending", "Running: vmaas, caas", f"run:{RUN}")
+
+
+def test_a_comment_that_asks_for_nothing_writes_nothing() -> None:
+    out = e2e_check.plan({"action": "skip-not-a-request"}, None, 500, lambda rid: False)
+    assert out.state == "ignored" and not out.start and not out.writes
