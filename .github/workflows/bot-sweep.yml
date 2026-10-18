@@ -101,6 +101,10 @@ jobs:
     permissions:
       contents: read  # the actions are fetched from osac-ci by the runner; nothing of the calling repository is checked out
       pull-requests: read  # read the pull request, its commits, files and reviews; the approval uses the app's token
+    env:
+      # Whether the caller passed the deprecated override token: the `secrets` context cannot be read in a step's `if`, so
+      # only this yes/no reaches the steps (never the secret).
+      OVERRIDE_TOKEN_GIVEN: ${{ secrets.MERGE_QUEUE_TOKEN != '' }}
     steps:
       # The policy answer (commits and files) is needed before held runs are approved: the approval below starts the pull
       # request's CI, so a pull request the policy refuses must not get it. This only reads; it approves nothing. A
@@ -114,10 +118,11 @@ jobs:
           repo: ${{ github.repository }}
           number: ${{ matrix.number }}
       # A token of the OSAC CI app for the preparation only: it edits the title and the label and approves held runs, so
-      # it needs pull-requests, issues and actions write, and nothing else. Minted only for a Konflux preparation.
+      # it needs pull-requests, issues and actions write, and nothing else. Minted only for a Konflux preparation, and
+      # not when the caller passed the deprecated override token (which is then used instead).
       - name: Token of the OSAC CI app, for the Konflux preparation
         id: prep-token
-        if: inputs.konflux-prep
+        if: inputs.konflux-prep && env.OVERRIDE_TOKEN_GIVEN != 'true'
         uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
         with:
           app-id: ${{ inputs.app-id }}
