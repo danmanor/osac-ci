@@ -11,7 +11,7 @@ import pytest
 from osac_ci import e2e_check, manual_run
 from osac_ci.compare import Requirement
 from osac_ci.e2e_start import Action, Inputs, Suite, decide, to_json
-from osac_ci.github.api import Response
+from osac_ci.github.api import GitHubError, Response
 from osac_ci.model import CheckRun
 
 pytestmark = pytest.mark.unit
@@ -175,6 +175,7 @@ class Fake:
         self.posted: list[tuple[str, str, Any]] = []
         self.next_id = 9
         self.early: dict[str, Any] | None = None  # a control comment another run posts while this one creates its own
+        self.delete_status = 204
 
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
         self.posted.append((method, path, body))
@@ -203,8 +204,9 @@ class Fake:
             return Response(200, {}, {})
         if method == "DELETE" and "/issues/comments/" in path:
             wanted = int(path.rsplit("/", 1)[1])
-            self.comments = [c for c in self.comments if c["id"] != wanted]
-            return Response(204, {}, {})
+            if self.delete_status == 204:
+                self.comments = [c for c in self.comments if c["id"] != wanted]
+            return Response(self.delete_status, {}, {})
         raise AssertionError(f"unexpected request {method} {path}")
 
 
@@ -537,3 +539,22 @@ def test_a_comment_created_alone_is_kept() -> None:
     fake = Fake([])
     assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
     assert len(fake.comments) == 1 and not [p for p in fake.posted if p[0] == "DELETE"]
+
+
+def test_a_duplicate_that_cannot_be_deleted_fails_before_anything_is_updated() -> None:
+    placeholder = {"id": 3, "user": {"login": "osac-ci[bot]"}, "body": f"{manual_run.MARKER}\nloading"}
+    fake = Fake([passed("E2E / VMaaS Full Install")])
+    fake.early = placeholder
+    fake.delete_status = 403
+    with pytest.raises(GitHubError, match="duplicate"):
+        manual_run.refresh(fake, POLICY, REPO, 7)  # type: ignore[arg-type]
+    assert fake.comments[0]["body"].endswith("loading")  # the older comment was not touched
+    assert not [p for p in fake.posted if p[0] == "PATCH"]
+
+
+def test_a_duplicate_that_is_already_gone_is_not_an_error() -> None:
+    placeholder = {"id": 3, "user": {"login": "osac-ci[bot]"}, "body": f"{manual_run.MARKER}\nloading"}
+    fake = Fake([passed("E2E / VMaaS Full Install")])
+    fake.early = placeholder
+    fake.delete_status = 404
+    assert manual_run.refresh(fake, POLICY, REPO, 7).startswith("created (kept")  # type: ignore[arg-type]

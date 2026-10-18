@@ -262,7 +262,12 @@ def refresh(
         created = response.data.get("id") if isinstance(response.data, Mapping) else None
         if oldest is None or created is None or int(str(oldest["id"])) == int(created):
             return "created"
-        client.request("DELETE", f"/repos/{repo}/issues/comments/{created}")
+        gone = client.request("DELETE", f"/repos/{repo}/issues/comments/{created}")
+        if gone.status not in (
+            204,
+            404,
+        ):  # 404: it is already gone; anything else leaves a duplicate for the next refresh
+            raise GitHubError(gone.status, "deleting the duplicate control comment")
         existing = oldest
         if str(existing.get("body", "")) == body:
             return "created (kept the older comment)"

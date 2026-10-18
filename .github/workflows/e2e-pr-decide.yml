@@ -118,8 +118,7 @@ jobs:
         with:
           app-id: ${{ inputs.app-id }}
           private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
-          permission-issues: write
-          permission-pull-requests: write  # a comment on a pull request needs this one, not only issues
+          permission-pull-requests: write  # a comment on a pull request needs this one
           permission-members: read
       - name: Post the placeholder
         env:
@@ -154,7 +153,7 @@ jobs:
           # Two runs can both have found none: keep the oldest, which has the place in the conversation.
           oldest=$(existing | sort -n | head -n1)
           if [[ -n "${oldest}" && "${oldest}" != "${mine}" ]]; then
-            gh api -X DELETE "repos/${REPO}/issues/comments/${mine}" || true
+            gh api -X DELETE "repos/${REPO}/issues/comments/${mine}"
           fi
 
   decide:
