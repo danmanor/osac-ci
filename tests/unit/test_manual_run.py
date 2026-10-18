@@ -173,6 +173,8 @@ class Fake:
         self.pr = pr or {"state": "open", "user": {"login": "alice"}, "head": {"sha": HEAD}}
         self.members = {"alice", "bob"}
         self.posted: list[tuple[str, str, Any]] = []
+        self.next_id = 9
+        self.early: dict[str, Any] | None = None  # a control comment another run posts while this one creates its own
 
     def request(self, method: str, path: str, body: Mapping[str, Any] | None = None, **_: Any) -> Response:
         self.posted.append((method, path, body))
@@ -188,11 +190,21 @@ class Fake:
             self.runs.append({"name": body["name"], "status": body.get("status"), "conclusion": body.get("conclusion")})  # type: ignore[index]
             return Response(201, {}, {})
         if method == "POST" and path.endswith("/comments"):
-            self.comments.append({"id": 9, "user": {"login": "osac-ci[bot]"}, "body": body["body"]})  # type: ignore[index]
-            return Response(201, {}, {})
+            if self.early is not None:
+                self.comments.append(self.early)
+                self.early = None
+            created = self.next_id
+            self.next_id += 1
+            self.comments.append({"id": created, "user": {"login": "osac-ci[bot]"}, "body": body["body"]})  # type: ignore[index]
+            return Response(201, {"id": created}, {})
         if method == "PATCH" and "/issues/comments/" in path:
-            self.comments[0]["body"] = body["body"]  # type: ignore[index]
+            wanted = int(path.rsplit("/", 1)[1])
+            next(c for c in self.comments if c["id"] == wanted)["body"] = body["body"]  # type: ignore[index]
             return Response(200, {}, {})
+        if method == "DELETE" and "/issues/comments/" in path:
+            wanted = int(path.rsplit("/", 1)[1])
+            self.comments = [c for c in self.comments if c["id"] != wanted]
+            return Response(204, {}, {})
         raise AssertionError(f"unexpected request {method} {path}")
 
 
@@ -510,3 +522,18 @@ def test_the_head_commit_is_in_the_comment_and_read_back() -> None:
     body = manual_run.render_comment(HEAD, views())
     assert f"<!-- head:{HEAD} -->" in body and manual_run.head_of(body) == HEAD
     assert manual_run.head_of("no marker") == ""
+
+
+def test_two_comments_created_at_once_leave_the_oldest_filled_in() -> None:
+    placeholder = {"id": 3, "user": {"login": "osac-ci[bot]"}, "body": f"{manual_run.MARKER}\nloading"}
+    fake = Fake([passed("E2E / VMaaS Full Install")])
+    fake.early = placeholder  # the early job posts its placeholder between our look and our POST
+    assert manual_run.refresh(fake, POLICY, REPO, 7).startswith("created (kept the older")  # type: ignore[arg-type]
+    assert [c["id"] for c in fake.comments] == [3]  # ours was deleted, the older one has the place
+    assert "VMaaS Full Install** · ✅ passed" in fake.comments[0]["body"]  # and it was filled in
+
+
+def test_a_comment_created_alone_is_kept() -> None:
+    fake = Fake([])
+    assert manual_run.refresh(fake, POLICY, REPO, 7) == "created"  # type: ignore[arg-type]
+    assert len(fake.comments) == 1 and not [p for p in fake.posted if p[0] == "DELETE"]

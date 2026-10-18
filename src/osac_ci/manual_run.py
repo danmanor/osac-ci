@@ -256,7 +256,20 @@ def refresh(
         response = client.request("POST", f"/repos/{repo}/issues/{number}/comments", body={"body": body})
         if response.status != 201:
             raise GitHubError(response.status, "creating the control comment")
-        return "created"
+        # The early job (see e2e-pr-decide.yml) posts a placeholder at the same moment: two runs can both have found
+        # none. Keep the oldest, the one that has the place in the conversation, and fill it in.
+        oldest = find_control_comment(client, repo, number, bot)
+        created = response.data.get("id") if isinstance(response.data, Mapping) else None
+        if oldest is None or created is None or int(str(oldest["id"])) == int(created):
+            return "created"
+        client.request("DELETE", f"/repos/{repo}/issues/comments/{created}")
+        existing = oldest
+        if str(existing.get("body", "")) == body:
+            return "created (kept the older comment)"
+        response = client.request("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", body={"body": body})
+        if response.status != 200:
+            raise GitHubError(response.status, "updating the control comment")
+        return "created (kept the older comment)"
     if str(existing.get("body", "")) == body:
         return "unchanged"
     response = client.request("PATCH", f"/repos/{repo}/issues/comments/{existing['id']}", body={"body": body})

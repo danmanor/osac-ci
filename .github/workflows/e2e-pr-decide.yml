@@ -96,6 +96,67 @@ on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a work
 permissions: {}
 
 jobs:
+  # The E2E comment must be early in the conversation (a comment cannot be moved, and CodeRabbit and others post within
+  # seconds of the pull request opening), but the decision needs about a minute to start, install its tools and read the
+  # policy. So this job runs in parallel with it, starting when the CI run is requested, and posts a short placeholder the
+  # moment it can; the decision then fills it in (`manual-comment` finds the comment by its marker and edits it, and if both
+  # create one at the same time the oldest is kept). Nothing here reads the pull request's code: a member's pull request
+  # only, an open one, once.
+  comment-early:
+    name: Post the E2E comment
+    if: >-
+      github.event_name == 'workflow_run' && github.event.action == 'requested' &&
+      github.event.workflow_run.name == inputs.ci-workflow-name && github.event.workflow_run.event == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions:
+      pull-requests: read  # find the pull request of the commit
+    steps:
+      - name: Token of the OSAC CI app, for the comment
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-issues: write
+          permission-pull-requests: write  # a comment on a pull request needs this one, not only issues
+          permission-members: read
+      - name: Post the placeholder
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APP_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          HEAD_SHA: ${{ github.event.workflow_run.head_sha }}
+        run: |
+          set -euo pipefail
+          [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "No head commit; nothing to do."; exit 0; }
+          # The open pull request that has exactly this head commit (a fork's commit is in no commits/{sha}/pulls list).
+          pulls=$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
+            | jq -cs --arg sha "${HEAD_SHA}" '[.[][] | select(.head.sha == $sha) | {number: .number, author: .user.login}]')
+          [[ "$(jq 'length' <<<"${pulls}")" == "1" ]] || { echo "Not exactly one pull request has this head; nothing to do."; exit 0; }
+          number=$(jq -r '.[0].number' <<<"${pulls}")
+          author=$(jq -r '.[0].author' <<<"${pulls}")
+          export GH_TOKEN="${APP_TOKEN}"
+          # A pull request of a member of the organization only (any account that is not one gets no comment).
+          if ! gh api "orgs/${REPO%%/*}/members/${author}" --silent 2>/dev/null; then
+            echo "The author is not a member of the organization; no comment."; exit 0
+          fi
+          marker='<!-- osac-ci:manual-run -->'
+          existing() {
+            gh api --paginate "repos/${REPO}/issues/${number}/comments" \
+              --jq ".[] | select(.user.login == \"osac-ci[bot]\" and (.body | contains(\"${marker}\"))) | .id"
+          }
+          if [[ -n "$(existing)" ]]; then echo "The comment is already there."; exit 0; fi
+          # shellcheck disable=SC2016  # the backticks are markdown, not command substitution
+          body=$(printf '%s\n<!-- head:%s -->\n> [!TIP]\n> ## 🧪 E2E tests\n>\n> Loading the list of E2E suites for the head commit `%s`...\n\n<!-- notes:start -->\n<!-- notes:end -->\n' \
+            "${marker}" "${HEAD_SHA}" "${HEAD_SHA:0:7}")
+          mine=$(gh api "repos/${REPO}/issues/${number}/comments" -f body="${body}" --jq .id)
+          # Two runs can both have found none: keep the oldest, which has the place in the conversation.
+          oldest=$(existing | sort -n | head -n1)
+          if [[ -n "${oldest}" && "${oldest}" != "${mine}" ]]; then
+            gh api -X DELETE "repos/${REPO}/issues/comments/${mine}" || true
+          fi
+
   decide:
     name: Decide
     # A finished run only matters when it belongs to a pull request (not to the merge queue or a push to main).
