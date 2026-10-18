@@ -23,13 +23,15 @@
 # Suites by hand: besides the automatic start, the decide job keeps one comment on the pull request (written by the OSAC CI
 # app, for a pull request of a member of the organization) that lists the E2E suites with a checkbox each. A member of the
 # organization who checks a box starts that suite for the head commit, whatever the approval state (a draft, a fork and
-# the member's own pull request included). The box clears itself, and the comment says what became of the request. A
+# the member's own pull request included). A comment of one line does the same: `/test` (the suites the change needs) or
+# `/test vmaas caas` (those suites). The box clears itself, and the comment says what became of the request. A
 # suite that is running or has passed on the commit is not started again. A run started by hand never claims the `E2E`
 # check: it writes the suite lines, and the `E2E` check turns green only when every suite the change needs has passed.
 #
 # What the caller must do (the contract):
 #   * trigger on `workflow_run` of its CI workflow and of its review relay (types requested, completed), on
-#     `workflow_dispatch` with a `number` input, and on `issue_comment` (type edited, for the boxes of the comment);
+#     `workflow_dispatch` with a `number` input, and on `issue_comment` (types edited, for the boxes of the comment, and
+#     created, for a `/test` comment);
 #   * set `run-name` to `E2E <head repository>:<head branch> @ <head sha>` for a `workflow_run` (the cancel step reads run
 #     titles, because a run of a workflow_run belongs to the default branch, not to the pull request commit);
 #   * give the calling job at least these permissions: contents read, pull-requests read, checks read, actions write;
@@ -160,19 +162,22 @@ jobs:
     name: Decide
     # A finished run only matters when it belongs to a pull request (not to the merge queue or a push to main).
     # An edit of the control comment by a person (the app's own edits are skipped, or its clearing of a box would wake this
-    # workflow again).
+    # workflow again), or a new comment of a person that starts with /test (the program reads the exact command; a comment
+    # that only starts like it is decided like any other event and starts nothing by hand).
     if: >-
       github.event_name == 'workflow_dispatch' ||
       github.event.workflow_run.event == 'pull_request' ||
       github.event.workflow_run.event == 'pull_request_review' ||
       (github.event_name == 'issue_comment' && github.event.action == 'edited' && github.event.issue.pull_request &&
        github.event.sender.login != 'osac-ci[bot]' && github.event.comment.user.login == 'osac-ci[bot]' &&
-       contains(github.event.comment.body, '<!-- osac-ci:manual-run -->'))
+       contains(github.event.comment.body, '<!-- osac-ci:manual-run -->')) ||
+      (github.event_name == 'issue_comment' && github.event.action == 'created' && github.event.issue.pull_request &&
+       github.event.comment.user.type == 'User' && startsWith(github.event.comment.body, '/test'))
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # One decision at a time per head commit (or per pull request when started by hand), so two runs never claim the
     # same commit together. GitHub keeps one waiting run per group, so a burst of events costs one extra decision.
-    # A checked box (issue_comment) is in its own group, by pull request number, on purpose: GitHub keeps one waiting run
+    # A checked box or a /test comment (issue_comment) is in its own group, by pull request number, on purpose: GitHub keeps one waiting run
     # per group and cancels the older waiting one, so in a shared group a burst of CI events could cancel a request and
     # the person would see a checked box that starts nothing. The two kinds of run cannot start the same suite twice in
     # practice: the automatic start happens once per commit, and a request skips a suite whose line is already waiting or
@@ -269,6 +274,22 @@ jobs:
           policy-file: ${{ github.workspace }}/${{ inputs.policy-file }}
           decision-file: ${{ steps.decide.outputs.json-file }}
           by: ${{ github.event_name == 'issue_comment' && github.event.sender.login || '' }}
+      # The answer on the command itself, so the person sees it where they wrote it: a rocket when suites start, a confused
+      # face when none did (the control comment says why). A comment that only starts like the command gets nothing.
+      - name: Answer the /test comment
+        if: github.event_name == 'issue_comment' && github.event.action == 'created' && steps.decide.outputs.number != ''
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          REPO: ${{ github.repository }}
+          COMMENT_ID: ${{ github.event.comment.id }}
+          DECISION: ${{ steps.decide.outputs.json-file }}
+        run: |
+          set -euo pipefail
+          if [ "$(jq -r '.[0].manual // false' "${DECISION}")" != "true" ]; then exit 0; fi
+          reaction=confused
+          if [ "$(jq -r '.[0].action' "${DECISION}")" = "start" ]; then reaction=rocket; fi
+          gh api -X POST "repos/${REPO}/issues/comments/${COMMENT_ID}/reactions" -f content="${reaction}" --silent
       # The pull request has an approval that counts on its head commit: the auto-merge job below turns auto-merge on.
       # Decided from the state, not from the event that woke this run: several runs for one commit replace each other, and
       # the one that survives may be any of them.

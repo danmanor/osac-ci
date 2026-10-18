@@ -345,9 +345,14 @@ def _parser() -> argparse.ArgumentParser:
     dec.add_argument(
         "--manual-comment-id",
         type=int,
-        help="an edit of this comment (the control comment) asks for suites by hand; needs --number and --manual-by",
+        help=(
+            "this comment (an edit of the control comment, or a /test comment) asks for suites by hand; "
+            "needs --number and --manual-by"
+        ),
     )
-    dec.add_argument("--manual-by", default="", help="who edited the comment (a member of the organization may ask)")
+    dec.add_argument(
+        "--manual-by", default="", help="who edited or wrote the comment (a member of the organization may ask)"
+    )
 
     suites_cmd = sub.add_parser(
         "e2e-suites",

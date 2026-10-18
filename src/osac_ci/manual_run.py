@@ -3,11 +3,13 @@
 osac-ci keeps one comment on a pull request (marked by a hidden line) that lists the E2E suites of the repository, each
 with a checkbox. A member of the organization who checks a box starts that suite for the head commit, whatever the
 approval state of the pull request, on a draft, on their own pull request and on a fork. The box clears itself, and the
-comment says what happened: started (with the run), already running, already passed. Nothing is started twice.
+comment says what happened: started (with the run), already running, already passed. Nothing is started twice. The same
+can be asked in a comment of one line, ``/test`` (the suites the change needs) or ``/test vmaas caas``.
 
 * ``render_comment`` writes the comment, ``requested_suites`` reads the boxes that are checked;
-* ``read_request`` checks that an edited comment is the control comment of this pull request and that the person who
-  edited it is a member of the organization, and gives the suites asked for;
+* ``parse_command`` reads a ``/test`` comment; ``read_request`` checks that an edited comment is the control comment of
+  this pull request (or that a command is the person's own), that the person is a member of the organization, and gives
+  the suites asked for;
 * ``refresh`` writes (creates or updates) the comment from the state of the head commit.
 
 Only the OSAC CI app writes the comment, so a comment of anyone else with the same marker is never read as a request.
@@ -22,7 +24,7 @@ import re
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 
-from osac_ci.e2e_start import CHECK_APP, Suite, line_state, suites_of
+from osac_ci.e2e_start import CHECK_APP, NEEDED, Suite, line_state, suites_of
 from osac_ci.github.api import GitHubClient, GitHubError, check_repo, get, paginate
 from osac_ci.model import CheckRun
 from osac_ci.planner import latest_checks
@@ -33,7 +35,10 @@ BOT_LOGIN = "osac-ci[bot]"  # who writes the control comment: the OSAC CI app
 NOTES_START = "<!-- notes:start -->"
 NOTES_END = "<!-- notes:end -->"
 HEAD_MARK = re.compile(r"<!-- head:(?P<sha>[0-9a-f]{40}) -->")
-BOX = re.compile(r"^- \[(?P<mark>[ xX])\] <!-- suite:(?P<suite>[a-z0-9][a-z0-9_-]{0,39}) -->", re.MULTILINE)
+SUITE_ID = r"[a-z0-9][a-z0-9_-]{0,39}"
+BOX = re.compile(rf"^- \[(?P<mark>[ xX])\] <!-- suite:(?P<suite>{SUITE_ID}) -->", re.MULTILINE)
+# The command: "/test" alone, or "/test" and suite ids, alone on the first line of a comment. Anything else is not one.
+COMMAND = re.compile(rf"/test(?:[ \t]+(?P<names>{SUITE_ID}(?:[ \t]+{SUITE_ID}){{0,9}}))?[ \t]*")
 LINE_PREFIX = "E2E / "
 # What a suite's line says, with an icon the eye catches: the same four states as ``e2e_start.line_state``.
 STATE_TEXT = {
@@ -79,7 +84,8 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str
                 "Any member of the organization can start a suite now, whatever the approval state of this pull "
                 "request (a draft, a fork and your own pull request included). Check a box below: the suite runs for "
                 f"the head commit `{sha[:7]}` and the box clears itself. A suite that is already running, or has "
-                "already passed on this commit, is not started again.",
+                "already passed on this commit, is not started again. Or comment `/test` for the suites this change "
+                "needs, or `/test <suite>` for the ones you name (the ids are in the boxes below).",
             ],
         ),
         "",
@@ -101,6 +107,19 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str
 def requested_suites(body: str) -> tuple[str, ...]:
     """The suites whose box is checked in the comment, in the order they are listed."""
     return tuple(m.group("suite") for m in BOX.finditer(body) if m.group("mark") in "xX")
+
+
+def parse_command(body: str) -> tuple[str, ...] | None:
+    """The suites a ``/test`` comment asks for: the names after it, or ``(NEEDED,)`` for a bare ``/test`` (the suites
+    the change needs). None when the comment is not a command. Only the first line counts, and it must be the command
+    and nothing else, so a quote (``> /test``), a code fence, a sentence that mentions the command and a longer word
+    (``/testing``) are not requests."""
+    first = body.split("\n", 1)[0].rstrip("\r")
+    found = COMMAND.fullmatch(first)
+    if found is None:
+        return None
+    names = found.group("names")
+    return tuple(dict.fromkeys(names.split())) if names else (NEEDED,)
 
 
 def head_of(body: str) -> str:
@@ -170,26 +189,36 @@ def read_request(
     bot: str = BOT_LOGIN,
     org_client: GitHubClient | None = None,
 ) -> tuple[tuple[str, ...], str, str]:
-    """The suites asked for by an edit of the comment ``comment_id`` of pull request ``number`` by ``sender``, the
-    reason a request was refused (empty when none was) and the head commit the comment was written for (the
-    decision refuses the request when the pull request has moved on). Only the control comment of this pull
-    request, written by the app, counts; only a member of the organization may ask. Nothing asked for is not a
-    refusal: an edit that unchecks a box (the app clearing it) asks for nothing. ``org_client`` is the client that
-    may read the organization's members (the main client when none is given)."""
+    """The suites asked for by ``sender`` in the comment ``comment_id`` of pull request ``number``, the reason a
+    request was refused (empty when none was) and the head commit the comment was written for (the decision refuses
+    the request when the pull request has moved on). Two kinds of comment ask: an edit of the control comment of this
+    pull request, written by the app, whose checked boxes name the suites; and a ``/test`` comment written by the
+    person themselves (an account of a person, not a bot), which names them or asks for the suites the change needs. A
+    command is not tied to a commit: it means "now". Only a member of the organization may ask. Nothing asked for is
+    not a refusal: an edit that unchecks a box (the app clearing it) asks for nothing. ``org_client`` is the client
+    that may read the organization's members (the main client when none is given)."""
     repo = check_repo(repo)
     comment = get(client, f"/repos/{repo}/issues/comments/{comment_id}")
-    if not is_control_comment(comment, bot):
-        return (), "", ""
     if not str(comment.get("issue_url", "")).endswith(f"/issues/{number}"):
         return (), "", ""
     body = str(comment.get("body", ""))
-    asked = requested_suites(body)
+    if is_control_comment(comment, bot):
+        asked = requested_suites(body)
+        seen = head_of(body)
+    else:
+        author = comment.get("user")
+        login = str(author.get("login", "")) if isinstance(author, Mapping) else ""
+        kind = str(author.get("type", "")) if isinstance(author, Mapping) else ""
+        command = parse_command(body)
+        if command is None or kind != "User" or login.lower() != sender.lower():
+            return (), "", ""
+        asked, seen = command, ""
     if not asked:
         return (), "", ""
     org = repo.split("/", 1)[0]
     if not is_org_member(org_client or client, org, sender):
         return (), f"@{sender} is not a member of the {org} organization, so nothing was started", ""
-    return asked, "", head_of(body)
+    return asked, "", seen
 
 
 def _conclusion(run: Mapping[str, object]) -> str | None:

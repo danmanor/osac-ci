@@ -34,11 +34,12 @@ inputs:
     default: ""
   manual-comment-id:
     description: >-
-      Id of the control comment that was edited (from an issue_comment event): the suites whose box is checked are
-      started by hand, if the person who edited it is a member of the organization. Needs number and manual-by
+      Id of the comment of an issue_comment event: when it is the control comment that was edited, the suites whose box is
+      checked are started by hand; when it is a /test comment, the suites it names (or the ones the change needs). Either
+      way only if the person is a member of the organization. Needs number and manual-by
     default: ""
   manual-by:
-    description: Login of the person who edited the control comment
+    description: Login of the person who edited the control comment or wrote the /test comment
     default: ""
   org-token:
     description: Token that can read the members of the organization (members read); used for a request by hand

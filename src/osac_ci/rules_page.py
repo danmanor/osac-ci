@@ -80,6 +80,13 @@ suite then runs for the head commit, with the repository's secrets, the same way
 itself and the comment says what became of the request. A suite that is already running, or has already passed on that
 commit, is not started again.
 
+The same can be asked with a comment of one line on the pull request: `/test` starts the suites the change needs that
+have not passed on the head commit (it is also how a failed suite is tried again), and `/test vmaas caas` starts the
+suites named, including the ones that are only started by hand. Only the first line counts, it must be the command and
+nothing else, and only a member of the organization is heard. The comment gets a rocket when suites started and a
+confused face when none did; the control comment says why. The command is read from the comment itself, so it is never
+tied to an older commit.
+
 A run started by hand writes only the line of its suite (`E2E / <suite>`). The required `E2E` check does not follow it
 until **every** suite the change needs has passed (by hand or by the approval); a suite that failed is shown on its own
 line and the `E2E` check stays as it was. An approval later runs only what has not passed yet.

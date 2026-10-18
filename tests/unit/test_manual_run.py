@@ -10,7 +10,7 @@ import pytest
 
 from osac_ci import e2e_check, manual_run
 from osac_ci.compare import Requirement
-from osac_ci.e2e_start import Action, Inputs, Suite, decide, to_json
+from osac_ci.e2e_start import NEEDED, Action, Inputs, Suite, decide, to_json
 from osac_ci.github.api import GitHubError, Response
 from osac_ci.model import CheckRun
 
@@ -92,9 +92,10 @@ def test_a_suite_that_failed_can_be_asked_for_again() -> None:
     assert d.starts and d.suites == ("vmaas",)
 
 
-def test_an_unknown_suite_starts_nothing() -> None:
+def test_an_unknown_suite_starts_nothing_and_the_note_lists_the_suites() -> None:
     d = decide(inputs(requested=("nope",), requested_by="bob"))
-    assert d.action is Action.NOTHING_TO_START and d.notes == (("nope", "is not a suite of this repository"),)
+    assert d.action is Action.NOTHING_TO_START
+    assert d.notes == (("nope", "is not a suite of this repository (suites: vmaas, caas, netris)"),)
 
 
 def test_a_refused_request_starts_nothing_and_says_why() -> None:
@@ -558,3 +559,123 @@ def test_a_duplicate_that_is_already_gone_is_not_an_error() -> None:
     fake.early = placeholder
     fake.delete_status = 404
     assert manual_run.refresh(fake, POLICY, REPO, 7).startswith("created (kept")  # type: ignore[arg-type]
+
+
+# a /test comment ---------------------------------------------------------------------------------------------------
+
+
+def test_a_bare_command_starts_the_suites_the_change_needs_not_the_hand_only_ones() -> None:
+    d = decide(inputs(requested=(NEEDED,), requested_by="bob"))
+    assert d.starts and d.manual and d.suites == ("vmaas", "caas")
+    assert d.notes == (("vmaas", "started by bob"), ("caas", "started by bob"))
+
+
+def test_a_bare_command_skips_what_passed_or_runs_and_so_retries_a_failure() -> None:
+    runs = (line("E2E / VMaaS Full Install", "success"), line("E2E / CaaS Full Install", "failure"))
+    d = decide(inputs(requested=(NEEDED,), requested_by="bob", check_runs=runs))
+    assert d.suites == ("caas",) and ("vmaas", "already passed on this commit; it was not run again") in d.notes
+
+
+def test_a_bare_command_on_a_docs_only_change_says_so_and_starts_nothing() -> None:
+    d = decide(inputs(requested=(NEEDED,), requested_by="bob", changed_files=("README.md",)))
+    assert d.action is Action.NOTHING_TO_START and "docs only" in d.reason
+
+
+def test_a_command_works_on_a_draft_without_an_approval() -> None:
+    assert decide(inputs(requested=(NEEDED,), requested_by="bob", draft=True)).starts
+
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        ("/test", (NEEDED,)),
+        ("/test  ", (NEEDED,)),
+        ("/test vmaas", ("vmaas",)),
+        ("/test vmaas caas\nplease", ("vmaas", "caas")),
+        ("/test\tvmaas\r\nthanks", ("vmaas",)),
+        ("/test vmaas vmaas", ("vmaas",)),
+        ("/test bmaas-netris_2", ("bmaas-netris_2",)),
+    ],
+)
+def test_the_command_names_the_suites_or_asks_for_the_ones_the_change_needs(
+    body: str, expected: tuple[str, ...]
+) -> None:
+    assert manual_run.parse_command(body) == expected
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        "",
+        "hello\n/test vmaas",  # not on the first line
+        "> /test vmaas",  # a quote
+        "```\n/test vmaas\n```",  # a code fence
+        " /test vmaas",  # indented
+        "please /test vmaas",  # a sentence
+        "/testing",
+        "/test-all",
+        "/test VMAAS",
+        "/test vmaas, caas",
+        "/test @needed",
+        "/test vmaas && rm",
+        "/test " + " ".join(["a"] * 11),  # more names than any repository has
+        "/retest",
+        "/test ?",
+        "<!-- osac-ci:manual-run -->\n/test vmaas",
+    ],
+)
+def test_anything_but_the_exact_command_is_not_a_request(body: str) -> None:
+    assert manual_run.parse_command(body) is None
+
+
+def command_api(body: str, *, author: str = "bob", kind: str = "User", issue: int = 7) -> Fake:
+    fake = comment_api(body, author=author, issue=issue)
+    inner = fake.request
+
+    def request(method: str, path: str, body_: Any = None, **kw: Any) -> Response:
+        response = inner(method, path, body_, **kw)
+        if method == "GET" and path == f"/repos/{REPO}/issues/comments/9":
+            response.data["user"]["type"] = kind
+        return response
+
+    fake.request = request  # type: ignore[method-assign]
+    return fake
+
+
+def test_a_member_s_command_asks_for_the_suites_it_names_and_is_not_tied_to_a_commit() -> None:
+    got = manual_run.read_request(command_api("/test caas"), REPO, 7, 9, "bob")  # type: ignore[arg-type]
+    assert got == (("caas",), "", "")
+
+
+def test_a_bare_command_asks_for_the_suites_the_change_needs() -> None:
+    assert manual_run.read_request(command_api("/test"), REPO, 7, 9, "bob") == ((NEEDED,), "", "")  # type: ignore[arg-type]
+
+
+def test_the_owner_of_the_pull_request_may_use_the_command_when_a_member() -> None:
+    api = command_api("/test vmaas", author="alice")
+    assert manual_run.read_request(api, REPO, 7, 9, "alice") == (("vmaas",), "", "")  # type: ignore[arg-type]
+
+
+def test_someone_outside_the_organization_is_refused_and_nothing_starts_by_command() -> None:
+    api = command_api("/test vmaas", author="eve")
+    asked, refused, _ = manual_run.read_request(api, REPO, 7, 9, "eve")  # type: ignore[arg-type]
+    assert asked == () and "not a member" in refused
+
+
+@pytest.mark.parametrize(
+    "api",
+    [
+        command_api("/test vmaas", kind="Bot"),  # an app or a bot never asks, even a member-named one
+        command_api("/test vmaas", author="carol"),  # the event's sender is not the comment's author
+        command_api("/test vmaas", issue=8),  # a comment of another issue
+        command_api("just a comment"),
+    ],
+)
+def test_a_comment_that_is_not_a_person_s_own_command_asks_for_nothing(api: Fake) -> None:
+    assert manual_run.read_request(api, REPO, 7, 9, "bob") == ((), "", "")  # type: ignore[arg-type]
+
+
+def test_a_command_inside_the_control_comment_text_of_someone_else_is_not_read_as_boxes() -> None:
+    # A person who copies the control comment (marker and checked box) is neither the app nor a command.
+    api = command_api(checked("caas"), author="bob")
+    assert manual_run.read_request(api, REPO, 7, 9, "bob") == ((), "", "")  # type: ignore[arg-type]

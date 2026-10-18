@@ -63,6 +63,10 @@ class Action(StrEnum):
     NOTHING_TO_START = "nothing-to-start"  # a person asked for suites by hand, and none needs to start
 
 
+# A request by hand that names no suite ("/test"): the suites the change needs. It cannot be typed as a suite name.
+NEEDED = "@needed"
+
+
 @dataclass(frozen=True)
 class Review:
     user: str
@@ -324,18 +328,30 @@ def _decide_by_hand(
     latest: Mapping[str, CheckRun],
     selected: tuple[tuple[str, str], ...],
 ) -> Decision:
-    """A member of the organization checked suites in the control comment. Approval, draft and cheap checks do not
-    matter (the person decides to spend the run); what matters is that each suite exists and is not already running or
-    passed on this commit. Nothing is claimed: the E2E check stays what the automatic path says."""
+    """A member of the organization asked for suites (a box in the control comment, or a ``/test`` comment). Approval,
+    draft and cheap checks do not matter (the person decides to spend the run); what matters is that each suite exists
+    and is not already running or passed on this commit. Nothing is claimed: the E2E check stays what the automatic path
+    says."""
     known = {s.name: s for s in inputs.suites}
     starts: list[Suite] = []
     notes: list[tuple[str, str]] = []
     if inputs.request_refused:
         notes.append(("", inputs.request_refused))
-    for name in dict.fromkeys(inputs.requested):
+    names: list[str] = []
+    for name in inputs.requested:
+        if name != NEEDED:
+            names.append(name)
+            continue
+        needed = applicable_suites(inputs)
+        names.extend(s.name for s in needed)
+        if not needed:
+            notes.append(
+                ("", "no E2E suite is affected by the changed files (docs only); name a suite to run it anyway")
+            )
+    for name in dict.fromkeys(names):
         suite = known.get(name)
         if suite is None:
-            notes.append((name, "is not a suite of this repository"))
+            notes.append((name, f"is not a suite of this repository (suites: {', '.join(known)})"))
             continue
         state = line_state(latest, suite.check)
         if state == "active":
