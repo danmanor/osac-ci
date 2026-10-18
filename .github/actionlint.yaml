@@ -1,7 +1,9 @@
 # actionlint 1.7.x does not know GitHub's self-repository syntax `uses: $/path`, which means "this workflow's own
 # repository at the commit the caller pinned". The shared workflows rely on it (verified in a cross-repository call on
-# 2026-10-17), so the message is ignored here.
+# 2026-10-17), so the message is ignored here. It also does not know `queue: max` in a concurrency block (GitHub added it
+# in May 2026: keep every waiting run, up to 100, instead of replacing the single waiting one), used by the decision.
 paths:
   .github/workflows/**/*.yml:
     ignore:
       - 'specifying action "\$/[^"]*" in invalid format because ref is missing'
+      - 'unexpected key "queue" for "concurrency" section'

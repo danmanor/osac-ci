@@ -176,14 +176,17 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     # One decision at a time per head commit (or per pull request when started by hand), so two runs never claim the
-    # same commit together. GitHub keeps one waiting run per group, so a burst of events costs one extra decision.
-    # A checked box or a /test comment (issue_comment) is in its own group, by pull request number, on purpose: GitHub keeps one waiting run
-    # per group and cancels the older waiting one, so in a shared group a burst of CI events could cancel a request and
-    # the person would see a checked box that starts nothing. The two kinds of run cannot start the same suite twice in
-    # practice: the automatic start happens once per commit, and a request skips a suite whose line is already waiting or
-    # running (the report writes the lines before the suites start).
+    # same commit together. A checked box or a /test comment (issue_comment) is in its own group, by pull request number,
+    # on purpose: in a shared group a burst of CI events could push out a request, and the person would see a checked box
+    # that starts nothing. `queue: max` keeps every waiting run (up to 100) and runs them one after another; by default
+    # GitHub keeps one waiting run per group and cancels the older one, so two people asking for different suites at once
+    # would lose one of the requests. A burst of CI events costs a few extra decisions of about a minute, each of which
+    # reads the state again. The two kinds of run cannot start the same suite twice in practice: the automatic start
+    # happens once per commit, and a request skips a suite whose line is already waiting or running (the report writes the
+    # lines before the suites start).
     concurrency:
       group: e2e-decide-${{ github.event.workflow_run.head_sha || github.event.inputs.number || github.event.issue.number }}
+      queue: max
       cancel-in-progress: false
     permissions:
       contents: read  # check out the policy and the path filters of the default branch, and osac-ci itself
