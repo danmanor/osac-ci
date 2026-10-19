@@ -81,11 +81,15 @@ def render_comment(sha: str, views: Sequence[SuiteView], notes: str = "") -> str
             [
                 "## 🧪 E2E tests",
                 "",
-                "Any member of the organization can start a suite now, whatever the approval state of this pull "
-                "request (a draft, a fork and your own pull request included). Check a box below: the suite runs for "
-                f"the head commit `{sha[:7]}` and the box clears itself. A suite that is already running, or has "
-                "already passed on this commit, is not started again. Or comment `/test` for the suites this change "
-                "needs, or `/test <suite>` for the ones you name (the ids are in the boxes below).",
+                "**Who:** any member of the organization, on any pull request (a draft, a fork or your own).",
+                "",
+                "**How to start a suite:**",
+                "- Check a box below. The box clears itself.",
+                "- Or comment `/test` for the suites this change needs.",
+                "- Or comment `/test <suite>` for the ones you name (the ids are in the boxes below).",
+                "",
+                f"**Good to know:** suites run on the head commit `{sha[:7]}`. A suite that is already running, or "
+                "has already passed on this commit, is not started again.",
             ],
         ),
         "",

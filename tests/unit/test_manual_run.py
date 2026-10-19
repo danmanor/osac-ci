@@ -257,6 +257,13 @@ def test_the_comment_lists_every_suite_with_an_unchecked_box() -> None:
     assert manual_run.requested_suites(body) == ()
 
 
+def test_the_tip_is_in_sections_and_names_both_ways_to_start() -> None:
+    tip = manual_run.render_comment(HEAD, views()).split("<details>")[0]
+    for part in ("**Who:**", "**How to start a suite:**", "**Good to know:**", "`/test`", "`/test <suite>`", HEAD[:7]):
+        assert part in tip
+    assert max(len(line) for line in tip.splitlines() if line.startswith("> ")) < 200  # no wall of text
+
+
 def test_checked_boxes_are_read_in_order() -> None:
     body = manual_run.render_comment(HEAD, views()).replace("- [ ] <!-- suite:caas", "- [x] <!-- suite:caas")
     body = body.replace("- [ ] <!-- suite:vmaas", "- [X] <!-- suite:vmaas")
