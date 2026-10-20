@@ -1,0 +1,54 @@
+# Shared workflow: posts the placeholder of the E2E control comment the moment a pull request opens. The decision
+# (e2e-pr-decide.yml) fills it in later and keeps it up to date; this workflow only has to be early, because a comment
+# cannot be moved and CodeRabbit posts about nine seconds after the pull request opens. The other way to be early, a job
+# of the decision that starts when CI is requested, lands a few seconds later (the event waits for CI to be created).
+#
+# A repository calls it from a small workflow of its own, `e2e-comment.yml`, named `E2E comment` (see docs/CALLERS.md):
+#   * trigger on `pull_request_target` (types opened, reopened). It runs from the default branch, so it has the secret
+#     for any pull request, a fork's included, and it checks out nothing of the pull request;
+#   * give the calling job no permissions at all (`permissions: {}`): the comment is written with the app token;
+#   * pass the secret OSAC_CI_APP_PRIVATE_KEY explicitly (never `secrets: inherit`);
+#   * list `E2E comment` in the `workflow_run` trigger of `e2e-pr.yml`: its decision then deletes the finished run, whose
+#     row would stay on the pull request page (like the review relay).
+# Only the pull request of a member of the organization gets a comment.
+name: E2E comment
+
+on:  # zizmor: ignore[dangerous-triggers] -- shared workflow, called from a pull_request_target caller; no pull request code runs
+  workflow_call:
+    inputs:
+      app-id:
+        description: Id of the OSAC CI app
+        type: string
+        default: "4966101"
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY:
+        description: Private key of the OSAC CI app (an organization secret)
+        required: true
+
+permissions: {}
+
+jobs:
+  comment:
+    name: Post the E2E comment
+    if: github.event_name == 'pull_request_target'
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    permissions: {}
+    steps:
+      - name: Token of the OSAC CI app, for the comment
+        id: app-token
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1  # v3.2.0
+        with:
+          app-id: ${{ inputs.app-id }}
+          private-key: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+          permission-pull-requests: write  # a comment on a pull request needs this one
+          permission-members: read
+      # `$/` is this workflow's own repository at the exact commit the caller pinned (see e2e-pr-decide.yml).
+      - uses: $/.github/actions/early-comment
+        with:
+          github-token: ${{ steps.app-token.outputs.token }}
+          repo: ${{ github.repository }}
+          head-sha: ${{ github.event.pull_request.head.sha }}
+          number: ${{ github.event.pull_request.number }}
+          author: ${{ github.event.pull_request.user.login }}
+          fresh: ${{ github.event.action == 'opened' }}

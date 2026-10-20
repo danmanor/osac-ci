@@ -18,7 +18,8 @@ an approver, which bots may be approved without a person, which checks are not "
 
 | Workflow | Used by | What it does |
 |---|---|---|
-| `e2e-pr-decide.yml` | the repo's `e2e-pr.yml` | decides whether the E2E may start and keeps the `E2E` check; housekeeping: auto-merge for an approved pull request, deletes the finished review relay run and the superseded Jira check runs |
+| `e2e-pr-comment.yml` | the repo's `e2e-comment.yml` | posts the placeholder of the E2E control comment the moment a pull request of a member opens, so it is above CodeRabbit's |
+| `e2e-pr-decide.yml` | the repo's `e2e-pr.yml` | decides whether the E2E may start and keeps the `E2E` check; housekeeping: auto-merge for an approved pull request, deletes the finished review relay run, early comment run and the superseded Jira check runs |
 | `e2e-pr-track.yml` | `e2e-pr.yml`, next to the suites | one check per suite on the pull request |
 | `e2e-pr-finish.yml` | `e2e-pr.yml`, after the suites | records the result, also after a cancel |
 | `e2e-queue-plan.yml` | `e2e-queue.yml` | plans the suites of a merge queue entry; cancels superseded entries |
@@ -42,7 +43,7 @@ run-name: >-
 
 on:
   workflow_run:
-    workflows: ["CI", "E2E review relay"]   # the names are inputs of the decision workflow (ci-workflow-name, relay-workflow-name)
+    workflows: ["CI", "E2E review relay", "E2E comment"]   # the names are inputs of the decision workflow (ci-workflow-name, relay-workflow-name, comment-workflow-name)
     types: [requested, completed]
   issue_comment:
     types: [edited]                          # the boxes of the control comment (suites started by hand)
@@ -112,6 +113,31 @@ jobs:
 
 The review relay (`e2e-review-relay.yml`) is a workflow named `E2E review relay` that does nothing on
 `pull_request_review` and on `pull_request` `ready_for_review`/`converted_to_draft`; finishing wakes `e2e-pr.yml`.
+
+## The caller of the early comment (`.github/workflows/e2e-comment.yml`)
+
+```yaml
+name: E2E comment
+
+on:
+  pull_request_target:        # runs from the default branch with the secret, and checks out nothing of the pull request
+    types: [opened, reopened]
+
+permissions: {}
+
+jobs:
+  comment:
+    uses: osac-project/osac-ci/.github/workflows/e2e-pr-comment.yml@<sha>  # <tag>
+    permissions: {}
+    secrets:
+      OSAC_CI_APP_PRIVATE_KEY: ${{ secrets.OSAC_CI_APP_PRIVATE_KEY }}
+```
+
+A comment cannot be moved, and CodeRabbit posts about nine seconds after a pull request opens. The decision's own early
+job starts only when CI is requested (about seven seconds in) and then needs a few more, so this workflow, which starts
+with the pull request, posts the placeholder sooner. The decision keeps its job as a second chance (a reopened pull
+request, a missed event) and fills the placeholder in. When this run finishes, the `E2E comment` entry in the `workflow_run`
+list of `e2e-pr.yml` wakes the decision, which deletes the run so its row does not stay on the pull request.
 
 ## Suites started by hand
 

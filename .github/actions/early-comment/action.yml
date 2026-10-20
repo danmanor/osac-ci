@@ -1,0 +1,77 @@
+name: Post the E2E comment early
+description: >-
+  Post the short placeholder of the control comment on a pull request of a member of the organization, as soon as
+  possible. A comment cannot be moved, and CodeRabbit and others post within seconds of the pull request opening, so
+  every second before the post counts. The decision fills the placeholder in later (the comment is found by its marker).
+  Called from a workflow of osac-ci, pinned to a commit, like the other actions.
+
+# The calling workflow holds the token (the OSAC CI app: pull requests write, members read). This action never checks
+# out the calling repository, so it cannot run pull request code. Every input reaches the shell through an environment
+# variable, never through the script text.
+inputs:
+  github-token:
+    description: Token of the OSAC CI app (pull requests write, members read)
+    required: true
+  repo:
+    description: Repository, owner/name
+    required: true
+  head-sha:
+    description: Head commit of the pull request (40 hex digits), shown in the placeholder
+    required: true
+  number:
+    description: >-
+      Pull request number. Empty looks the pull request up by its head commit (the open one with exactly this head), which
+      takes a few more seconds.
+    default: ""
+  author:
+    description: Login of the pull request author (with number); empty takes it from the lookup
+    default: ""
+  fresh:
+    description: '"true" when the pull request was opened a moment ago, so no comment can be there yet and the check is skipped'
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Post the placeholder
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github-token }}
+        REPO: ${{ inputs.repo }}
+        HEAD_SHA: ${{ inputs.head-sha }}
+        NUMBER: ${{ inputs.number }}
+        AUTHOR: ${{ inputs.author }}
+        FRESH: ${{ inputs.fresh }}
+      run: |
+        set -euo pipefail
+        [[ "${HEAD_SHA}" =~ ^[0-9a-f]{40}$ ]] || { echo "No head commit; nothing to do."; exit 0; }
+        if [[ -z "${NUMBER}" ]]; then
+          # The open pull request that has exactly this head commit (a fork's commit is in no commits/{sha}/pulls list).
+          pulls=$(gh api --paginate "repos/${REPO}/pulls?state=open&per_page=100" \
+            | jq -cs --arg sha "${HEAD_SHA}" '[.[][] | select(.head.sha == $sha) | {number: .number, author: .user.login}]')
+          [[ "$(jq 'length' <<<"${pulls}")" == "1" ]] || { echo "Not exactly one pull request has this head; nothing to do."; exit 0; }
+          NUMBER=$(jq -r '.[0].number' <<<"${pulls}")
+          AUTHOR=$(jq -r '.[0].author' <<<"${pulls}")
+        fi
+        [[ "${NUMBER}" =~ ^[0-9]+$ ]] || { echo "No pull request number; nothing to do."; exit 0; }
+        [[ "${AUTHOR}" =~ ^[A-Za-z0-9][A-Za-z0-9-]*(\[bot\])?$ ]] || { echo "No author login; nothing to do."; exit 0; }
+        # A pull request of a member of the organization only (any account that is not one gets no comment).
+        if ! gh api "orgs/${REPO%%/*}/members/${AUTHOR}" --silent 2>/dev/null; then
+          echo "The author is not a member of the organization; no comment."; exit 0
+        fi
+        marker='<!-- osac-ci:manual-run -->'
+        existing() {
+          gh api --paginate "repos/${REPO}/issues/${NUMBER}/comments" \
+            --jq ".[] | select(.user.login == \"osac-ci[bot]\" and (.body | contains(\"${marker}\"))) | .id"
+        }
+        if [[ "${FRESH}" != "true" && -n "$(existing)" ]]; then echo "The comment is already there."; exit 0; fi
+        # shellcheck disable=SC2016  # the backticks are markdown, not command substitution
+        body=$(printf '%s\n<!-- head:%s -->\n> [!TIP]\n> ## 🧪 E2E tests\n>\n> Loading the list of E2E suites for the head commit `%s`...\n\n<!-- notes:start -->\n<!-- notes:end -->\n' \
+          "${marker}" "${HEAD_SHA}" "${HEAD_SHA:0:7}")
+        mine=$(gh api "repos/${REPO}/issues/${NUMBER}/comments" -f body="${body}" --jq .id)
+        # Two runs can both have found none (this one and the one that waits for CI): keep the oldest, which has the place
+        # in the conversation. The check comes after the post, so it costs the comment no time.
+        oldest=$(existing | sort -n | head -n1)
+        if [[ -n "${oldest}" && "${oldest}" != "${mine}" ]]; then
+          gh api -X DELETE "repos/${REPO}/issues/comments/${mine}"
+        fi
