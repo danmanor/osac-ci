@@ -348,15 +348,17 @@ jobs:
 
   # The review relay only wakes the caller. Once it has, its run is of no use and its row on the pull request is noise,
   # so delete it (a deleted run takes its check rows with it). Only a relay that succeeded: a failed one stays, to be
-  # looked at. A separate job, not a step of `decide`: the concurrency group of `decide` cancels a waiting run, and a
-  # cancelled run would leave its relay row behind.
+  # looked at. The early comment run (e2e-pr-comment.yml) is deleted whatever its result: its row is a red line on the
+  # pull request that no one can act on, and the decision's own early job posts the comment a few seconds later anyway.
+  # A separate job, not a step of `decide`: the concurrency group of `decide` cancels a waiting run, and a cancelled run
+  # would leave its relay row behind.
   clean-relay:
     name: Remove the relay run
     if: >-
       github.event.action == 'completed' &&
-      (github.event.workflow_run.name == inputs.relay-workflow-name ||
-       github.event.workflow_run.name == inputs.comment-workflow-name) &&
-      github.event.workflow_run.conclusion == 'success'
+      ((github.event.workflow_run.name == inputs.relay-workflow-name &&
+        github.event.workflow_run.conclusion == 'success') ||
+       github.event.workflow_run.name == inputs.comment-workflow-name)
     runs-on: ubuntu-latest
     timeout-minutes: 2
     permissions:

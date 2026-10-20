@@ -191,6 +191,9 @@ def test_the_decision_deletes_the_finished_run_of_the_early_comment_like_the_rel
     wf = load(DECIDE)
     assert wf[True]["workflow_call"]["inputs"]["comment-workflow-name"]["default"] == "E2E comment"
     condition = " ".join(wf["jobs"]["clean-relay"]["if"].split())
-    assert "github.event.workflow_run.name == inputs.relay-workflow-name" in condition
-    assert "github.event.workflow_run.name == inputs.comment-workflow-name" in condition
-    assert "github.event.action == 'completed'" in condition and "conclusion == 'success'" in condition
+    assert condition == (
+        "github.event.action == 'completed' && "
+        "((github.event.workflow_run.name == inputs.relay-workflow-name && "
+        "github.event.workflow_run.conclusion == 'success') || "
+        "github.event.workflow_run.name == inputs.comment-workflow-name)"
+    ), "a relay run is deleted only when it succeeded; an early comment run whatever its result"
