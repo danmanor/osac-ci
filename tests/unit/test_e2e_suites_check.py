@@ -40,12 +40,13 @@ class SuiteWorld(World):
 
     def job(self, name: str, status: str, conclusion: str | None = None) -> None:
         self.jobs = [j for j in self.jobs if j["name"] != name]
+        job_id = name.replace(" / ", "-").replace(" ", "-")
         self.jobs.append(
             {
                 "name": name,
                 "status": status,
                 "conclusion": conclusion,
-                "html_url": f"https://example.invalid/o/r/actions/runs/500/job/{name.split()[0]}",
+                "html_url": f"https://example.invalid/o/r/actions/runs/500/job/{job_id}",
             }
         )
 
@@ -71,15 +72,60 @@ def fast(world: SuiteWorld, lines: Mapping[str, str], **kw: Any) -> list[str]:
 # which job is a suite's ----------------------------------------------------------------------------------------
 
 
-def test_the_job_of_a_suite_is_found_by_the_suite_id_and_the_deepest_one_that_ran_counts() -> None:
+def test_the_job_of_a_suite_is_found_by_the_suite_id_and_its_e2e_job_counts() -> None:
     world = SuiteWorld()
     world.job("vmaas", "queued")
     world.job("vmaas / dispatch", "in_progress")
     world.job("vmaas / dispatch / e2e", "in_progress")
     world.job("caas / dispatch / e2e", "queued")
     jobs = find_jobs(world, REPO, RUN, ["vmaas", "caas"])
-    assert jobs["vmaas"].url.endswith("/job/vmaas") and jobs["vmaas"].status == "in_progress"
+    assert jobs["vmaas"].url.endswith("/job/vmaas-dispatch-e2e") and jobs["vmaas"].status == "in_progress"
     assert jobs["caas"].status == "queued"
+
+
+def test_tracking_does_not_pass_while_the_suite_e2e_job_is_still_running() -> None:
+    world = SuiteWorld()
+    world.job("netris / e2e-bmaas-netris / provision / provision", "completed", "success")
+    world.job("netris / e2e-bmaas-netris / e2e", "in_progress")
+
+    fast(world, {"netris": NET}, follow=True, timeout=0)
+
+    status = world.line(NET)
+    assert status["description"] == "Running"
+    assert status["target_url"].endswith("/job/netris-e2e-bmaas-netris-e2e")
+
+
+def test_tracking_waits_for_the_suite_e2e_job_when_only_provisioning_has_finished() -> None:
+    world = SuiteWorld()
+    world.job("netris / e2e-bmaas-netris / provision / provision", "completed", "success")
+
+    fast(world, {"netris": NET}, follow=True, timeout=0)
+
+    status = world.line(NET)
+    assert status["description"] == "Waiting for a runner"
+    assert status["target_url"] == RUN_URL
+
+
+def test_settle_uses_a_failed_suite_e2e_job_instead_of_successful_provisioning() -> None:
+    world = SuiteWorld()
+    world.job("netris / e2e-bmaas-netris / provision / provision", "completed", "success")
+    world.job("netris / e2e-bmaas-netris / e2e", "completed", "failure")
+
+    settle(world, REPO, SHA, RUN, RUN_URL, {"netris": NET})
+
+    status = world.line(NET)
+    assert (status["state"], status["description"]) == ("failure", "Failed")
+    assert status["target_url"].endswith("/job/netris-e2e-bmaas-netris-e2e")
+
+
+def test_a_skipped_suite_e2e_job_does_not_fall_back_to_a_successful_provision_job() -> None:
+    world = SuiteWorld()
+    world.job("netris / e2e-bmaas-netris / provision / provision", "completed", "success")
+    world.job("netris / e2e-bmaas-netris / e2e", "completed", "skipped")
+
+    settle(world, REPO, SHA, RUN, RUN_URL, {"netris": NET})
+
+    assert world.line(NET)["description"] == "Cancelled"
 
 
 def test_a_skipped_job_of_another_suite_in_the_same_caller_does_not_count() -> None:
@@ -114,7 +160,7 @@ def test_a_queued_job_is_waiting_for_a_runner_and_links_the_job_logs() -> None:
     world.job("vmaas / e2e", "queued")
     fast(world, {"vmaas": VM}, timeout=0)
     status = world.line(VM)
-    assert status["description"] == "Waiting for a runner" and status["target_url"].endswith("/job/vmaas")
+    assert status["description"] == "Waiting for a runner" and status["target_url"].endswith("/job/vmaas-e2e")
 
 
 def test_the_line_turns_to_running_when_the_job_gets_a_runner_and_the_tracking_ends() -> None:
@@ -253,7 +299,7 @@ def test_settle_reads_each_result_from_the_job_and_links_its_logs() -> None:
     assert settle(world, REPO, SHA, RUN, RUN_URL, LINES) == ["vmaas", "caas"]
     assert (world.line(VM)["state"], world.line(VM)["description"]) == ("success", "Passed")
     assert (world.line(CA)["state"], world.line(CA)["description"]) == ("failure", "Failed")
-    assert world.line(CA)["target_url"].endswith("/job/caas")
+    assert world.line(CA)["target_url"].endswith("/job/caas-e2e")
 
 
 @pytest.mark.parametrize(

@@ -8,8 +8,9 @@ looking at the pull request, who sees which suite is running or failed and gets 
 Which suites exist, and what their lines are called, is the repository's policy and not this program's: the decision
 (``e2e_start``) carries, for each suite it picks, the ``check`` name of its job in the policy, and ``track`` and
 ``settle`` take that mapping (suite id -> line name). A new suite is a policy entry and a workflow; nothing changes
-here. The job of a suite in the workflow run is found by its id: the calling job is named after the suite
-(``vmaas``), so the job that does the work is listed as ``vmaas / ... / e2e``.
+here. The test job is the deepest matching job whose final name segment is ``e2e`` (for example,
+``vmaas / ... / e2e``). Until it appears, an active setup job can show progress, but a completed setup job is not a
+suite result. A skipped test job must not fall back to a successful setup job.
 
 ``track`` writes the lines when the suites are about to start and keeps them current until every job has a runner.
 ``settle`` completes them with the result of each suite's job, read from the jobs of the run; the workflow must run
@@ -45,20 +46,34 @@ def parse_lines(text: str) -> dict[str, str]:
 
 
 def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -> dict[str, Job]:
-    """The job that does the work of each suite in the workflow run: of the jobs whose name is the suite's id or starts
-    with ``<id> / `` (the calling job and what it calls, one level per ``/``), the deepest one that did not get skipped.
-    A calling workflow can hold jobs for other suites that are skipped for this one; those do not count."""
-    best: dict[str, tuple[int, Job]] = {}
+    """Find each suite's test job, using active setup jobs for progress until the test job appears.
+
+    The test job is the deepest matching job whose final name segment is ``e2e``. A calling workflow can hold jobs for
+    other suites that are skipped for this one; those do not count. Completed setup jobs cannot stand in for a test
+    result, and a skipped test job cannot fall back to a successful setup job.
+    """
+    best_e2e: dict[str, tuple[int, Job]] = {}
+    best_active: dict[str, tuple[int, Job]] = {}
+    skipped_e2e: set[str] = set()
     jobs = paginate(
         client, f"/repos/{check_repo(repo)}/actions/runs/{int(run_id)}/jobs", key="jobs", params={"filter": "latest"}
     )
     for job in jobs:
         name = str(job.get("name", ""))
-        if job.get("conclusion") == "skipped":
-            continue
         for suite in suites:
             if name == suite or name.startswith(f"{suite} / "):
                 depth = name.count(" / ")
+                is_e2e = name.rsplit(" / ", 1)[-1] == "e2e"
+                if job.get("conclusion") == "skipped":
+                    if is_e2e:
+                        skipped_e2e.add(suite)
+                    continue
+                if is_e2e:
+                    best = best_e2e
+                else:
+                    if job.get("status") not in {"queued", "in_progress"}:
+                        continue
+                    best = best_active
                 if suite not in best or depth > best[suite][0]:
                     best[suite] = (
                         depth,
@@ -68,7 +83,11 @@ def find_jobs(client: GitHubClient, repo: str, run_id: int, suites: list[str]) -
                             str(job.get("conclusion") or ""),
                         ),
                     )
-    return {suite: job for suite, (_, job) in best.items()}
+    selected = {suite: job for suite, (_, job) in best_e2e.items()}
+    selected.update(
+        {suite: job for suite, (_, job) in best_active.items() if suite not in selected and suite not in skipped_e2e}
+    )
+    return selected
 
 
 def _state(job: Job | None, *, final: bool = False) -> tuple[str, str]:
